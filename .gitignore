@@ -5,4 +5,7 @@ Part1/test/*.indirect
 Part1/test/*.decoded*
 Part1/test/*.direct
 Part1/test/*.bin
+Part2/zig-out*
+Part2/.zig-cache*
+Part2/build.zig.zon
 
