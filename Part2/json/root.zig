@@ -31,6 +31,13 @@ pub fn tokenize_literal(literal: []const u8, src: []const u8) !void {
 }
 
 pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []const u8, i: usize } {
+    if (src.len == 0) {
+        return .{ .str = &.{}, .i = 0 };
+    }
+
+    if (src[0] != '\"') {
+        return Errors.illigal_character;
+    }
     var i: usize = 1;
 
     var str: std.ArrayList(u8) = .empty; 
@@ -42,6 +49,9 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
             },
             '\\' => {
                 i += 1;
+                if (i == src.len) {
+                    return Errors.illigal_character;
+                }
                 switch(src[i]) {
                     '\"' => {
                         try str.append(al, '\"');
@@ -56,7 +66,7 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
                         i += 1;
                     },
                     'b' => {
-                        try str.append(al, 'b');
+                        try str.append(al, '\x08');
                         i += 1;
                     },
                     'f' => {
@@ -77,25 +87,33 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
                     },
                     'u' => {
                         i += 1;
-                        if ((i + 4) > src.len) {
-                            return Errors.illigal_escape_sequence;
-                        }
+                        if (i + 4 > src.len) return Errors.illigal_escape_sequence;
 
-                        //this will allow, _ character, but who cares
-                        const highPair = std.fmt.parseUnsigned(u8, src[i..(i + 2)], 16) catch {
-                            return Errors.illigal_escape_sequence;
-                        };
-
-                        if (highPair != 0) {
-                            try str.append(al, highPair);
-                        }
-
-                        const lowPair = std.fmt.parseUnsigned(u8, src[(i + 2)..(i + 4)], 16) catch {
-                            return Errors.illigal_escape_sequence;
-                        };
-
-                        try str.append(al, lowPair);
+                        const high = std.fmt.parseUnsigned(u16, src[i..i + 4], 16)
+                            catch return Errors.illigal_escape_sequence;
                         i += 4;
+
+                        var cp: u21 = high;
+                        if (high >= 0xD800 and high <= 0xDBFF) {
+                            if (i + 6 > src.len or src[i] != '\\' or src[i + 1] != 'u') {
+                                return Errors.illigal_escape_sequence;
+                            }
+                            const low = std.fmt.parseUnsigned(u16, src[i + 2..i + 6], 16)
+                                catch return Errors.illigal_escape_sequence;
+                            if (low < 0xDC00 or low > 0xDFFF) return Errors.illigal_escape_sequence;
+
+                            const hi_bits: u21 = @as(u21, high) - 0xD800;
+                            const lo_bits: u21 = @as(u21, low) - 0xDC00;
+                            cp = 0x10000 + (hi_bits << 10) + lo_bits;
+                            i += 6;
+                        } else if (high >= 0xDC00 and high <= 0xDFFF) {
+                            return Errors.illigal_escape_sequence;
+                        }
+
+                        var buf: [4]u8 = undefined;
+                        const n = std.unicode.utf8Encode(cp, &buf)
+                            catch return Errors.illigal_escape_sequence;
+                        try str.appendSlice(al, buf[0..n]);
                     },
                     else => {
                         return Errors.illigal_escape_sequence;
@@ -176,7 +194,7 @@ pub fn validate_exponent(exponent: []const u8) bool {
         return true;
     }
 
-    if (exponent.len < 3 or (exponent[i] != 'e' and exponent[i] != 'E')) {
+    if (exponent.len == 1 or (exponent[i] != 'e' and exponent[i] != 'E')) {
         return false;
     }
 
@@ -659,5 +677,378 @@ test "tokenize: object with number value" {
     try expectTag(.COLON, tokens[2]);
     try expectTag(.NUMBER, tokens[3]);
     try expectTag(.R_CURLY_BRACE, tokens[4]);
+}
+
+test "tokenize_string: \\b escape produces backspace byte" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"x\\by\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "x\x08y", out.str);
+}
+
+test "tokenize_string: \\f escape produces form-feed byte" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"x\\fy\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "x\x0Cy", out.str);
+}
+
+test "tokenize_string: \\u00A9 encodes as UTF-8 0xC2 0xA9" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u00A9\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xC2\xA9", out.str);
+}
+
+test "tokenize_string: \\u0100 encodes as UTF-8 0xC4 0x80" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u0100\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xC4\x80", out.str);
+}
+
+test "tokenize_string: \\u0022 decodes to literal quote" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u0022\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\"", out.str);
+}
+
+test "tokenize_string: trailing backslash at EOF" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize_string(al, "\"\\"));
+}
+
+test "tokenize: trailing backslash at EOF" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize(al, "\"\\"));
+}
+
+test "tokenize_string: backslash then EOF after opening quote" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize_string(al, "\"abc\\"));
+}
+
+test "tokenize: exponent without sign 0e5" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "0e5");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "0e5", tokens[0].NUMBER);
+}
+
+test "tokenize: exponent without sign capital 1E7" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "1E7");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "1E7", tokens[0].NUMBER);
+}
+
+test "tokenize: fraction with unsigned exponent 1.5e9" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "1.5e9");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "1.5e9", tokens[0].NUMBER);
+}
+
+test "tokenize: -0 is a valid number" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "-0");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "-0", tokens[0].NUMBER);
+}
+
+test "tokenize: leading-dot .5 is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.unrecognized_token, tokenize(al, ".5"));
+}
+
+test "tokenize: lone minus is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize(al, "-"));
+}
+
+test "tokenize: plus-prefixed number is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.unrecognized_token, tokenize(al, "+5"));
+}
+
+test "tokenize: number with double dot rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize(al, "1.2.3"));
+}
+
+test "tokenize: number with trailing dot rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize(al, "1."));
+}
+
+test "tokenize: number with bare exponent rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize(al, "1e"));
+}
+
+test "tokenize: empty input yields no tokens" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 0), tokens.len);
+}
+
+test "tokenize: only whitespace yields no tokens" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "   \t\n\r  ");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 0), tokens.len);
+}
+
+test "tokenize: true followed by string no space" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "true\"x\"");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.TRUE, tokens[0]);
+    try expectTag(.STR, tokens[1]);
+    try std.testing.expectEqualSlices(u8, "x", tokens[1].STR);
+}
+
+test "tokenize: string with many escapes mixed" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "\"a\\\"b\\\\c\\nd\\te\"");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.STR, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "a\"b\\c\nd\te", tokens[0].STR);
+}
+
+test "tokenize: deeply nested arrays" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "[[[[[]]]]]");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 10), tokens.len);
+    try expectTag(.L_SQUARE_BRACE, tokens[0]);
+    try expectTag(.L_SQUARE_BRACE, tokens[4]);
+    try expectTag(.R_SQUARE_BRACE, tokens[5]);
+    try expectTag(.R_SQUARE_BRACE, tokens[9]);
+}
+
+test "tokenize: string containing only \\u0000" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u0000\"");
+    defer al.free(out.str);
+    try std.testing.expectEqual(@as(usize, 1), out.str.len);
+    try std.testing.expectEqual(@as(u8, 0), out.str[0]);
+}
+
+test "tokenize: negative fraction -0.25" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "-0.25");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "-0.25", tokens[0].NUMBER);
+}
+
+test "tokenize: object with array value" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "{\"a\":[1,2]}");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 9), tokens.len);
+    try expectTag(.L_CURLY_BRACE, tokens[0]);
+    try expectTag(.STR, tokens[1]);
+    try expectTag(.COLON, tokens[2]);
+    try expectTag(.L_SQUARE_BRACE, tokens[3]);
+    try expectTag(.NUMBER, tokens[4]);
+    try expectTag(.COMMA, tokens[5]);
+    try expectTag(.NUMBER, tokens[6]);
+    try expectTag(.R_SQUARE_BRACE, tokens[7]);
+    try expectTag(.R_CURLY_BRACE, tokens[8]);
+}
+
+test "tokenize_string: \\u0080 encodes to 0xC2 0x80" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u0080\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xC2\x80", out.str);
+}
+
+test "tokenize_string: \\u07FF encodes to 0xDF 0xBF" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u07FF\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xDF\xBF", out.str);
+}
+
+test "tokenize_string: \\u0800 encodes to 0xE0 0xA0 0x80" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u0800\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xE0\xA0\x80", out.str);
+}
+
+test "tokenize_string: \\uFFFF encodes to 0xEF 0xBF 0xBF" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\uFFFF\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xEF\xBF\xBF", out.str);
+}
+
+test "tokenize_string: lowercase hex in \\u escape" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\u00a9\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xC2\xA9", out.str);
+}
+
+test "tokenize_string: surrogate pair decodes to emoji" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"\\uD83D\\uDE00\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "\xF0\x9F\x98\x80", out.str);
+}
+
+test "tokenize_string: raw UTF-8 multibyte passes through" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "\"caf\xC3\xA9\"");
+    defer al.free(out.str);
+    try std.testing.expectEqualSlices(u8, "caf\xC3\xA9", out.str);
+}
+
+test "tokenize_string: JSON-looking content inside string" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "\"[1,2]\"");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 1), tokens.len);
+    try expectTag(.STR, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "[1,2]", tokens[0].STR);
+}
+
+test "tokenize_string: empty slice yields empty result" {
+    const al = std.testing.allocator;
+    const out = try tokenize_string(al, "");
+    try std.testing.expectEqual(@as(usize, 0), out.str.len);
+    try std.testing.expectEqual(@as(usize, 0), out.i);
+}
+
+test "tokenize_string: single opening quote errors" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_character, tokenize_string(al, "\""));
+}
+
+test "tokenize: literal adjacent to number no whitespace" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "true42");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 2), tokens.len);
+    try expectTag(.TRUE, tokens[0]);
+    try expectTag(.NUMBER, tokens[1]);
+}
+
+test "tokenize: number adjacent to literal no whitespace" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "42true");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 2), tokens.len);
+    try expectTag(.NUMBER, tokens[0]);
+    try expectTag(.TRUE, tokens[1]);
+}
+
+test "tokenize: uppercase TRUE is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.unrecognized_token, tokenize(al, "TRUE"));
+}
+
+test "tokenize: raw UTF-8 outside string is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.unrecognized_token, tokenize(al, "\xC3\xA9"));
+}
+
+test "tokenize: negative zero with fraction" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "-0.0");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "-0.0", tokens[0].NUMBER);
+}
+
+test "tokenize: big object" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "{\"a\":1,\"b\":2}");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 9), tokens.len);
+    try expectTag(.L_CURLY_BRACE, tokens[0]);
+    try expectTag(.STR, tokens[1]);
+    try expectTag(.COLON, tokens[2]);
+    try expectTag(.NUMBER, tokens[3]);
+    try expectTag(.COMMA, tokens[4]);
+    try expectTag(.STR, tokens[5]);
+    try expectTag(.COLON, tokens[6]);
+    try expectTag(.NUMBER, tokens[7]);
+    try expectTag(.R_CURLY_BRACE, tokens[8]);
+}
+
+test "tokenize: array of five numbers" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "[1,2,3,4,5]");
+    defer deinit_tokenize(al, tokens);
+    try std.testing.expectEqual(@as(usize, 11), tokens.len);
+    try expectTag(.L_SQUARE_BRACE, tokens[0]);
+    try expectTag(.NUMBER, tokens[1]);
+    try expectTag(.NUMBER, tokens[9]);
+    try expectTag(.R_SQUARE_BRACE, tokens[10]);
+}
+
+test "tokenize: huge integer string passes" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "123456789012345678901234567890");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "123456789012345678901234567890", tokens[0].NUMBER);
+}
+
+test "tokenize: \\u followed by only 3 hex then quote" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_escape_sequence, tokenize(al, "\"\\u041\""));
+}
+
+test "tokenize: string with escaped unicode quote" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "\"a\\u0022b\"");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.STR, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "a\"b", tokens[0].STR);
+}
+
+test "tokenize: lone high-surrogate is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_escape_sequence, tokenize(al, "\"\\uD800\""));
+}
+
+test "tokenize: lone low-surrogate is rejected" {
+    const al = std.testing.allocator;
+    try std.testing.expectError(error.illigal_escape_sequence, tokenize(al, "\"\\uDC00\""));
+}
+
+test "tokenize: leading plus in exponent works" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "2.5E+10");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "2.5E+10", tokens[0].NUMBER);
+}
+
+test "tokenize: number 0.0 is valid" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "0.0");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
+    try std.testing.expectEqualSlices(u8, "0.0", tokens[0].NUMBER);
+}
+
+test "tokenize: number 0.123e+45 is valid" {
+    const al = std.testing.allocator;
+    const tokens = try tokenize(al, "0.123e+45");
+    defer deinit_tokenize(al, tokens);
+    try expectTag(.NUMBER, tokens[0]);
 }
 
