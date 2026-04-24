@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     const json_test = b.addTest(.{
         .name = "json-test",
         .root_module = json_mod,
-        .use_llvm = true
+        .use_llvm = true,
     });
     const run_test = b.addRunArtifact(json_test);
 
