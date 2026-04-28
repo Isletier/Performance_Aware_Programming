@@ -15,8 +15,8 @@ pub const Object_indexed = struct {
 };
 
 pub const Object = union(enum) {
-    Object_plain,
-    Object_indexed
+    plain : Object_plain,
+    indexed : Object_indexed
 };
 
 pub const Value = union(enum) {
@@ -29,10 +29,8 @@ pub const Value = union(enum) {
     null_obj
 };
 
-const Value_t = std.meta.Tag(Value);
-
 pub const RootObj = struct {
-    prefix_count:   i64,
+    postfix_count:  u64,
     indexes:        std.StringHashMap(usize),
     value:          Value
 };
@@ -43,8 +41,10 @@ pub const Errors = error {
     incorrect_value_token
 };
 
+const JsonError = std.mem.Allocator.Error || Errors || std.fmt.ParseFloatError || std.fmt.ParseIntError;
+const ParseReturn = JsonError!struct { val: Value, tokens: []const Tokens };
 
-pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) !struct { val: []const Value, tokens: []const Tokens } {
+pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) ParseReturn {
     if(tokens.len == 0 or tokens[0] != .L_SQUARE_BRACE) {
         return Errors.incorrect_value_token;
     }
@@ -53,24 +53,24 @@ pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj
     var array: std.ArrayList(Value) = .empty;
     errdefer array.deinit(al);
     while(tokens_temp.len != 0) {
+        //this is broken
         switch(tokens_temp[0]) {
             .COMMA, .COLON => {
                 return Errors.incorrect_value_token;
             },
+            .R_SQUARE_BRACE => {
+                const result = try array.toOwnedSlice(al);
+                return .{ .val = . { .array = result }, .tokens = tokens_temp[1..] };
+            },
             else => {
                 const result = try parse_value(al, tokens, root);
-                array.append(al, result.val);
+                try array.append(al, result.val);
                 tokens_temp = result.tokens;
             }
         }
 
         if(tokens_temp.len == 0) {
             return Errors.incorrect_value_token;
-        }
-
-        if(tokens_temp[0] == .R_SQUARE_BRACE) {
-            const result = try array.toOwnedSlice(al);
-            return .{ .val = result, .tokens = tokens_temp[1..] };
         }
 
         if(tokens_temp[0] != .COMMA) {
@@ -81,28 +81,42 @@ pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj
     return Errors.incorrect_value_token;
 }
 
-pub fn parse_number(tokens: []const Tokens) !struct { val: Value, tokens: []const Tokens } {
+pub fn parse_number(tokens: []const Tokens) ParseReturn {
     if (tokens.len == 0) {
         return Errors.incorrect_value_token;
     }
 
-    const res_int = std.fmt.parseInt(i64, tokens[0], 10);
-    if (res_int) |value| {
-        return .{ .val = value, .tokens = tokens[1..] };
+    if (tokens[0] != Tokens.NUMBER) {
+        return Errors.incorrect_value_token;
     }
 
-    const res_float = try std.fmt.parseFloat(f64, tokens[0]);
+    if (std.fmt.parseInt(i64, tokens[0].NUMBER, 10)) |value| {
+        return .{ .val = .{.integer = value }, .tokens = tokens[1..] };
+    } else |_| {}
 
-    return .{ .val = res_float, .tokens = tokens[1..] };
+    const res_float = try std.fmt.parseFloat(f64, tokens[0].NUMBER);
+
+    return .{ .val = .{ .float = res_float }, .tokens = tokens[1..] };
 }
 
-pub fn to_plain_obj(al: std.mem.Allocator, keys: std.ArrayList([]const u8), values : std.ArrayList(Value)) !Object_plain {
-    return .{ .keys = try keys.toOwnedSlice(al), .values = try values.toOwnedSlice(al) };
+pub fn to_plain_obj(al: std.mem.Allocator, keys: std.ArrayList([]const u8), values : std.ArrayList(Value)) !Object {
+    var keys_v = keys;
+    var values_v = values;
+
+    const obj_p: Object_plain = .{ .keys = try keys_v.toOwnedSlice(al), .values = try values_v.toOwnedSlice(al) };
+    return .{ .plain = obj_p };
+}
+
+pub fn to_indexed_obj(al: std.mem.Allocator, root: *RootObj, values : std.ArrayList(Value)) !Object {
+    var values_v = values;
+
+    const obj_i: Object_indexed = .{ .values = try values_v.toOwnedSlice(al), .ident_prefix = root.*.postfix_count, .indexation = &root.*.indexes };
+    return . { .indexed = obj_i };
 }
 
 pub fn check_for_key(keys: std.ArrayList([]const u8), key: []const u8) bool {
-    for(keys) |entry| {
-        if(entry == key) {
+    for(keys.items) |entry| {
+        if(std.mem.eql(u8, entry, key)) {
             return true;
         }
     }
@@ -110,45 +124,55 @@ pub fn check_for_key(keys: std.ArrayList([]const u8), key: []const u8) bool {
     return false;
 }
 
-pub fn index_plain_objects(al: std.mem.Allocator, root: *RootObj, keys: std.ArrayList([]const u8), values : std.ArrayList(Value)) !void {
-    var i = 0;
-    const keys_entries = keys.items;
-    const values_entries = values.items;
+pub fn transform_key(al: std.mem.Allocator, postfix: usize, key: []const u8) ![]const u8 {
+    var hex_buf: [20]u8 = undefined;
+    const size = std.fmt.printInt(&hex_buf, postfix, 16, std.fmt.Case.upper, .{});
 
-    al.realloc(, new_n: usize)
-    const str = try std.fmt.printInt(buf, root.*.prefix_count, 16);
+    const result = try al.alloc(u8, key.len + 1 + size);
+    @memcpy(result[0..key.len], key);
+    // insert a control code to remove possible conflict with a strings that ends with numbers
+    result[key.len] = 0x01;
+    @memcpy(result[key.len + 1..], hex_buf[0..size]);
 
-    while(i < keys_entries.len) : (i += 1) {
-        
-        try root.*.indexes.put(keys_entries[i], values_entries[i]);
-    }
-
-    
+    return result;
 }
 
-pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) !struct { val: Object, tokens: []const Tokens } {
+pub fn index_plain_objects(al: std.mem.Allocator, root: *RootObj, keys: std.ArrayList([]const u8)) !void {
+    var i: usize = 0;
+    const keys_entries = keys.items;
+
+    while(i < keys_entries.len) : (i += 1) {
+        const transformed_key = try transform_key(al, root.*.postfix_count, keys_entries[i]);
+        try root.*.indexes.put(transformed_key, i);
+    }
+
+    return;
+}
+
+pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) ParseReturn {
     if(tokens.len == 0) {
         return Errors.incorrect_value_token;
     }
 
-    if(tokens[0] != .L_CURLY_BRACERS) {
+    if(tokens[0] != .L_CURLY_BRACE) {
         return Errors.incorrect_value_token;
     }
 
-    const tokens_temp = tokens[1..];
-    const keys:     std.ArrayList([]const u8) = .empty;
-    const values:   std.ArrayList(Value) = .empty;
+    var tokens_temp = tokens[1..];
+    var keys:     std.ArrayList([]const u8) = .empty;
+    var values:   std.ArrayList(Value)      = .empty;
     errdefer keys.deinit(al);
     errdefer values.deinit(al);
+    defer root.*.postfix_count += 1;
 
-    var total_str_len_count = 0;
+    var total_str_len_count: usize = 0;
     while(tokens_temp.len != 0 and total_str_len_count < 512) {
-        if (tokens_temp[0] == .R_SQUARE_BRACES) {
-            const value = to_plain_obj(al, keys, values);
-            return .{ .val = value, .tokens = tokens_temp[1..] };
+        if (tokens_temp[0] == .R_SQUARE_BRACE) {
+            const value = try to_plain_obj(al, keys, values);
+            return .{ .val = .{ .Object = value }, .tokens = tokens_temp[1..] };
         }
 
-        if (tok`    ens_temp[0] != .STR) {
+        if (tokens_temp[0] != .STR) {
             return Errors.incorrect_value_token;
         }
 
@@ -178,9 +202,44 @@ pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootOb
         return Errors.incorrect_value_token;
     }
 
+    try index_plain_objects(al, root, keys);
+
+    while(tokens_temp.len != 0) {
+        if (tokens_temp[0] == .R_SQUARE_BRACE) {
+            const value = try to_indexed_obj(al, root, values);
+            return .{ .val = .{ .Object = value }, .tokens = tokens_temp[1..] };
+        }
+
+        if (tokens_temp[0] != .STR) {
+            return Errors.incorrect_value_token;
+        }
+
+        const key = try transform_key(al, root.*.postfix_count, tokens_temp[0].STR);
+        if(root.*.indexes.contains(key)) {
+            return Errors.incorrect_value_token;
+        }
+
+        total_str_len_count += key.len;
+        tokens_temp = tokens_temp[1..];
+        if (tokens_temp.len == 0) {
+            return Errors.incorrect_value_token;
+        }
+
+        if (tokens_temp[0] != .COLON) {
+            return Errors.incorrect_value_token;
+        }
+
+        const result = try parse_value(al, tokens_temp[1..], root);
+        tokens_temp = result.tokens;
+
+        try root.*.indexes.put(key, values.items.len - 1);
+        try values.append(al, result.val);
+    }
+
+    return Errors.incorrect_value_token;
 }
 
-pub fn parse_value(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) !struct { val: Value, tokens: []const Tokens } {
+pub fn parse_value(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) ParseReturn {
     if(tokens.len == 0) {
         return Errors.incorrect_value_token;
     }
@@ -195,41 +254,39 @@ pub fn parse_value(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj
             return try parse_array(al, tokens_temp, root);
         },
         .STR => {
-            return .{ .val = tokens_temp[0].STR, .tokens = tokens_temp[1..] };
+            return .{ .val = .{ .string = tokens_temp[0].STR }, .tokens = tokens_temp[1..] };
         },
         .TRUE => {
-            return .{ .val = true, .tokens = tokens_temp[1..] };
+            return .{ .val = .{ .boolean = true }, .tokens = tokens_temp[1..] };
         },
         .FALSE => {
-            return .{ .val = false, .tokens = tokens_temp[1..] };
+            return .{ .val = .{ .boolean = false }, .tokens = tokens_temp[1..] };
         },
         .NULL => {
             return .{ .val = Value.null_obj, .tokens = tokens_temp[1..] };
         },
         .NUMBER => {
-            return try parse_number();
+            return try parse_number(tokens_temp);
         },
+        else => {
+            return Errors.incorrect_value_token;
+        }
     }
 }
 
 pub fn parse_syntax(al: std.mem.Allocator, tokens: []const Tokens) !RootObj {
-    if (tokens[0] == Tokens.L_CURLY_BRACE) {
-        if (tokens[tokens.len - 1] != Tokens.R_CURLY_BRACE) {
-            return Errors.object_closing_brace;
-        }
-
-        tokens = tokens[1..(tokens.len - 1)];
-    }
-
-    var value_stack: std.ArrayList(Value_t) = .empty;
-    errdefer value_stack.deinit(al);
-
-    const root = RootObj {
-        .prefix_count   = 0,
-        .indexes        = std.StringHashMap(Value).init(al),
-        .value          = .empty
+    var root = RootObj {
+        .postfix_count   = 0,
+        .indexes        = std.StringHashMap(usize).init(al),
+        .value          = Value.null_obj
     };
 
-    return try parse_value(al, tokens, root);
+    const result = try parse_value(al, tokens, &root);
+    if (result.tokens.len != 0) {
+        return Errors.incorrect_value_token;
+    }
+
+    root.value = result.val;
+    return root;
 }
 

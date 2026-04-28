@@ -343,9 +343,9 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
 pub fn deinit_tokenize(al: std.mem.Allocator, tokens: []const Tokens) void {
     for (tokens) |token| {
         switch(token) {
-//            Tokens.STR => |s| {
-//                al.free(s);
-//            },
+            Tokens.STR => |s| {
+                al.free(s);
+            },
             Tokens.NUMBER => |n| {
                 al.free(n);
             },
