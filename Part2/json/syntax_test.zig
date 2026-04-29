@@ -7,10 +7,10 @@ const Value = syntax_mod.Value;
 const Object = syntax_mod.Object;
 const Object_plain = syntax_mod.Object_plain;
 const Object_indexed = syntax_mod.Object_indexed;
-const RootObj = syntax_mod.RootObj;
+const Json = syntax_mod.Json;
 
-fn make_root(al: std.mem.Allocator) RootObj {
-    return RootObj{
+fn make_root(al: std.mem.Allocator) Json {
+    return Json{
         .postfix_count = 0,
         .indexes = std.StringHashMap(usize).init(al),
         .value = .null_obj,
@@ -561,7 +561,7 @@ test "to_indexed_obj: ident_prefix copied from root" {
 
     const obj = try syntax_mod.to_indexed_obj(al, &root, values);
     defer al.free(obj.indexed.values);
-    try std.testing.expectEqual(@as(u64, 7), obj.indexed.ident_prefix);
+    try std.testing.expectEqual(@as(u64, 7), obj.indexed.ident_postfix);
 }
 
 // ---------- index_plain_objects ----------

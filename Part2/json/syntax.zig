@@ -9,7 +9,7 @@ pub const Object_plain = struct {
 };
 
 pub const Object_indexed = struct {
-    ident_prefix:   u64,
+    ident_postfix:   u64,
     indexation:     *std.StringHashMap(usize),
     values:         []const Value
 };
@@ -29,7 +29,7 @@ pub const Value = union(enum) {
     null_obj
 };
 
-pub const RootObj = struct {
+pub const Json = struct {
     postfix_count:  u64,
     indexes:        std.StringHashMap(usize),
     value:          Value
@@ -44,7 +44,7 @@ pub const Errors = error {
 const JsonError = std.mem.Allocator.Error || Errors || std.fmt.ParseFloatError || std.fmt.ParseIntError;
 const ParseReturn = JsonError!struct { val: Value, tokens: []const Tokens };
 
-pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) ParseReturn {
+pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *Json) ParseReturn {
     if(tokens.len == 0 or tokens[0] != .L_SQUARE_BRACE) {
         return Errors.incorrect_value_token;
     }
@@ -52,29 +52,46 @@ pub fn parse_array(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj
     var tokens_temp = tokens[1..];
     var array: std.ArrayList(Value) = .empty;
     errdefer array.deinit(al);
+    var prev_comma = false;
     while(tokens_temp.len != 0) {
-        //this is broken
         switch(tokens_temp[0]) {
             .COMMA, .COLON => {
                 return Errors.incorrect_value_token;
             },
             .R_SQUARE_BRACE => {
+                if (prev_comma) {
+                    return Errors.incorrect_value_token;
+                }
+
                 const result = try array.toOwnedSlice(al);
-                return .{ .val = . { .array = result }, .tokens = tokens_temp[1..] };
+                return .{ .val = .{ .array = result }, .tokens = tokens_temp[1..] };
             },
             else => {
-                const result = try parse_value(al, tokens, root);
+                const result = try parse_value(al, tokens_temp, root);
                 try array.append(al, result.val);
                 tokens_temp = result.tokens;
             }
         }
 
+        prev_comma = false;
+
         if(tokens_temp.len == 0) {
             return Errors.incorrect_value_token;
         }
 
-        if(tokens_temp[0] != .COMMA) {
-            return Errors.incorrect_value_token;
+        switch(tokens_temp[0]) {
+            .COMMA => {
+                prev_comma = true;
+                tokens_temp = tokens_temp[1..];
+                continue;
+            },
+            .R_SQUARE_BRACE => {
+                const result = try array.toOwnedSlice(al);
+                return .{ .val = .{ .array = result }, .tokens = tokens_temp[1..] };
+            },
+            else => {
+                return Errors.incorrect_value_token;
+            }
         }
     }
 
@@ -107,10 +124,10 @@ pub fn to_plain_obj(al: std.mem.Allocator, keys: std.ArrayList([]const u8), valu
     return .{ .plain = obj_p };
 }
 
-pub fn to_indexed_obj(al: std.mem.Allocator, root: *RootObj, values : std.ArrayList(Value)) !Object {
+pub fn to_indexed_obj(al: std.mem.Allocator, root: *Json, values : std.ArrayList(Value)) !Object {
     var values_v = values;
 
-    const obj_i: Object_indexed = .{ .values = try values_v.toOwnedSlice(al), .ident_prefix = root.*.postfix_count, .indexation = &root.*.indexes };
+    const obj_i: Object_indexed = .{ .values = try values_v.toOwnedSlice(al), .ident_postfix = root.*.postfix_count, .indexation = &root.*.indexes };
     return . { .indexed = obj_i };
 }
 
@@ -137,7 +154,7 @@ pub fn transform_key(al: std.mem.Allocator, postfix: usize, key: []const u8) ![]
     return result;
 }
 
-pub fn index_plain_objects(al: std.mem.Allocator, root: *RootObj, keys: std.ArrayList([]const u8)) !void {
+pub fn index_plain_objects(al: std.mem.Allocator, root: *Json, keys: std.ArrayList([]const u8)) !void {
     var i: usize = 0;
     const keys_entries = keys.items;
 
@@ -149,7 +166,7 @@ pub fn index_plain_objects(al: std.mem.Allocator, root: *RootObj, keys: std.Arra
     return;
 }
 
-pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) ParseReturn {
+pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *Json) ParseReturn {
     if(tokens.len == 0) {
         return Errors.incorrect_value_token;
     }
@@ -166,11 +183,17 @@ pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootOb
     defer root.*.postfix_count += 1;
 
     var total_str_len_count: usize = 0;
+    var prev_comma = false;
     while(tokens_temp.len != 0 and total_str_len_count < 512) {
-        if (tokens_temp[0] == .R_SQUARE_BRACE) {
+        if (tokens_temp[0] == .R_CURLY_BRACE) {
+            if(prev_comma) {
+                return Errors.incorrect_value_token;
+            }
             const value = try to_plain_obj(al, keys, values);
             return .{ .val = .{ .Object = value }, .tokens = tokens_temp[1..] };
         }
+
+        prev_comma = false;
 
         if (tokens_temp[0] != .STR) {
             return Errors.incorrect_value_token;
@@ -193,6 +216,24 @@ pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootOb
 
         const result = try parse_value(al, tokens_temp[1..], root);
         tokens_temp = result.tokens;
+
+        if (tokens_temp.len == 0) {
+            return Errors.incorrect_value_token;
+        }
+
+        switch(tokens_temp[0]) {
+            .COMMA => {
+                prev_comma = true;
+                tokens_temp = tokens_temp[1..];
+            },
+            .R_CURLY_BRACE => {
+                const value = try to_plain_obj(al, keys, values);
+                return .{ .val = .{ .Object = value }, .tokens = tokens_temp[1..] };
+            },
+            else => {
+                return Errors.incorrect_value_token;
+            }
+        }
 
         try keys.append(al, key);
         try values.append(al, result.val);
@@ -239,7 +280,7 @@ pub fn parse_object(al: std.mem.Allocator, tokens: []const Tokens, root: *RootOb
     return Errors.incorrect_value_token;
 }
 
-pub fn parse_value(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj) ParseReturn {
+pub fn parse_value(al: std.mem.Allocator, tokens: []const Tokens, root: *Json) ParseReturn {
     if(tokens.len == 0) {
         return Errors.incorrect_value_token;
     }
@@ -274,8 +315,8 @@ pub fn parse_value(al: std.mem.Allocator, tokens: []const Tokens, root: *RootObj
     }
 }
 
-pub fn parse_syntax(al: std.mem.Allocator, tokens: []const Tokens) !RootObj {
-    var root = RootObj {
+pub fn parse_syntax(al: std.mem.Allocator, tokens: []const Tokens) !Json {
+    var root = Json {
         .postfix_count   = 0,
         .indexes        = std.StringHashMap(usize).init(al),
         .value          = Value.null_obj
@@ -288,5 +329,53 @@ pub fn parse_syntax(al: std.mem.Allocator, tokens: []const Tokens) !RootObj {
 
     root.value = result.val;
     return root;
+}
+
+pub fn deinit_object(al: std.mem.Allocator, obj: Object) void {
+    switch(obj) {
+        .indexed => |ind| {
+            for (ind.values) |val| {
+                deinit_value(val);
+            }
+            al.free(ind.values);
+        },
+        .plain => |pl| {
+            for (pl.keys) |key| {
+                al.free(key);
+            }
+
+            for (pl.values) |val| {
+                deinit_value(val);
+            }
+
+            al.free(pl.keys);
+            al.free(pl.values);
+        }
+    }
+}
+
+pub fn deinit_value(al: std.mem.Allocator, value: Value) void {
+    switch(value) {
+        .string => |str| {
+            al.free(str);
+        },
+        .array => |arr| {
+            for (arr) |val| {
+                deinit_value(val);
+            }
+
+            al.free(arr);
+        },
+        .Object => |obj| {
+            al.free(obj);
+        },
+        else => {}
+    }
+
+}
+
+pub fn deinit_json(al: std.mem.Allocator, json :Json) !void {
+    deinit_value(al, json.value);
+    json.indexes.deinit();
 }
 
