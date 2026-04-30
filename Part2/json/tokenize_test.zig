@@ -12,75 +12,57 @@ fn expectTag(expected: std.meta.Tag(Tokens), actual: Tokens) !void {
 }
 
 test "tokenize_string: simple ascii" {
-    const al = std.testing.allocator;
     const src = "\"hello\"";
-    const out = try tokenize_string(al, src);
-    defer al.free(out.str);
+    const out = try tokenize_string(src);
     try std.testing.expectEqualStrings("hello", out.str);
 }
 
 test "tokenize_string: escaped quote and backslash" {
-    const al = std.testing.allocator;
     const src = "\"a\\\"b\\\\c\"";
-    const out = try tokenize_string(al, src);
-    defer al.free(out.str);
-    try std.testing.expectEqualStrings("a\"b\\c", out.str);
+    const out = try tokenize_string(src);
+    try std.testing.expectEqualStrings("a\\\"b\\\\c", out.str);
 }
 
 test "tokenize_string: unterminated returns error" {
-    const al = std.testing.allocator;
     const src = "\"no closing quote";
-
-    try std.testing.expectError(error.illigal_character, tokenize_string(al, src));
+    try std.testing.expectError(error.illigal_character, tokenize_string(src));
 }
 
 test "tokenize_string: control char is illegal" {
-    const al = std.testing.allocator;
     const src = "\"bad\x01char\"";
-    try std.testing.expectError(error.illigal_character, tokenize_string(al, src));
+    try std.testing.expectError(error.illigal_character, tokenize_string(src));
 }
 
 test "tokenize_string: empty string (just closing quote)" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\"\"");
-    defer al.free(out.str);
+    const out = try tokenize_string("\"\"\"");
     try std.testing.expectEqualStrings("", out.str);
 }
 
 test "tokenize_string: forward slash escape \\/" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"a\\/b\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualStrings("a/b", out.str);
+    const out = try tokenize_string("\"a\\/b\"");
+    try std.testing.expectEqualStrings("a\\/b", out.str);
 }
 
-test "tokenize_string: \\n escape should produce newline byte" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"line\\nbreak\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualStrings("line\nbreak", out.str);
+test "tokenize_string: \\n escape should produce raw backslash-n" {
+    const out = try tokenize_string("\"line\\nbreak\"");
+    try std.testing.expectEqualStrings("line\\nbreak", out.str);
 }
 
-test "tokenize_string: \\t escape should produce tab byte" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"a\\tb\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualStrings("a\tb", out.str);
+test "tokenize_string: \\t escape should produce raw backslash-t" {
+    const out = try tokenize_string("\"a\\tb\"");
+    try std.testing.expectEqualStrings("a\\tb", out.str);
 }
 
 test "tokenize_string: illegal escape returns error" {
-    const al = std.testing.allocator;
-    try std.testing.expectError(error.illigal_escape_sequence, tokenize_string(al, "\"bad\\xescape\""));
+    try std.testing.expectError(error.illigal_escape_sequence, tokenize_string("\"bad\\xescape\""));
 }
 
 test "tokenize_string: truncated \\u escape returns error" {
-    const al = std.testing.allocator;
-    try std.testing.expectError(error.illigal_escape_sequence, tokenize_string(al, "\"\\u00\""));
+    try std.testing.expectError(error.illigal_escape_sequence, tokenize_string("\"\\u00\""));
 }
 
 test "tokenize_string: non-hex in \\u escape returns error" {
-    const al = std.testing.allocator;
-    try std.testing.expectError(error.illigal_escape_sequence, tokenize_string(al, "\"\\uZZZZ\""));
+    try std.testing.expectError(error.illigal_escape_sequence, tokenize_string("\"\\uZZZZ\""));
 }
 
 test "tokenize_literal: exact match" {
@@ -243,14 +225,11 @@ test "tokenize: unterminated string errors" {
 }
 
 test "tokenize: string is a single backslash" {
-    // Source `"\\"` (4 chars) decodes to "\". The termination scan only
-    // looks back one byte, so `\\"` is seen as "escaped quote, keep going"
-    // and the string is reported unterminated.
     const al = std.testing.allocator;
     const tokens = try tokenize(al, "\"\\\\\"");
     defer deinit_tokenize(al, tokens);
     try expectTag(.STR, tokens[0]);
-    try std.testing.expectEqualSlices(u8, "\\", tokens[0].STR);
+    try std.testing.expectEqualSlices(u8, "\\\\", tokens[0].STR);
 }
 
 test "tokenize: string with newline escape" {
@@ -258,7 +237,7 @@ test "tokenize: string with newline escape" {
     const tokens = try tokenize(al, "\"\\n\"");
     defer deinit_tokenize(al, tokens);
     try expectTag(.STR, tokens[0]);
-    try std.testing.expectEqualSlices(u8, "\n", tokens[0].STR);
+    try std.testing.expectEqualSlices(u8, "\\n", tokens[0].STR);
 }
 
 test "tokenize: escaped string followed by another token" {
@@ -268,6 +247,7 @@ test "tokenize: escaped string followed by another token" {
     try expectTag(.STR, tokens[0]);
     try expectTag(.COMMA, tokens[1]);
     try expectTag(.STR, tokens[2]);
+    try std.testing.expectEqualSlices(u8, "\\n", tokens[0].STR);
     try std.testing.expectEqualSlices(u8, "x", tokens[2].STR);
 }
 
@@ -276,12 +256,12 @@ test "tokenize: raw control char in string is rejected" {
     try std.testing.expectError(error.illigal_character, tokenize(al, "\"a\tb\""));
 }
 
-test "tokenize: \\u escape decodes to one code point" {
+test "tokenize: \\u escape raw slice" {
     const al = std.testing.allocator;
     const tokens = try tokenize(al, "\"\\u0041\"");
     defer deinit_tokenize(al, tokens);
     try expectTag(.STR, tokens[0]);
-    try std.testing.expectEqualSlices(u8, "A", tokens[0].STR);
+    try std.testing.expectEqualSlices(u8, "\\u0041", tokens[0].STR);
 }
 
 test "tokenize: object with escaped key" {
@@ -323,44 +303,33 @@ test "tokenize: object with number value" {
     try expectTag(.R_CURLY_BRACE, tokens[4]);
 }
 
-test "tokenize_string: \\b escape produces backspace byte" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"x\\by\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "x\x08y", out.str);
+test "tokenize_string: \\b escape produces raw backslash-b" {
+    const out = try tokenize_string("\"x\\by\"");
+    try std.testing.expectEqualSlices(u8, "x\\by", out.str);
 }
 
-test "tokenize_string: \\f escape produces form-feed byte" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"x\\fy\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "x\x0Cy", out.str);
+test "tokenize_string: \\f escape produces raw backslash-f" {
+    const out = try tokenize_string("\"x\\fy\"");
+    try std.testing.expectEqualSlices(u8, "x\\fy", out.str);
 }
 
-test "tokenize_string: \\u00A9 encodes as UTF-8 0xC2 0xA9" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u00A9\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xC2\xA9", out.str);
+test "tokenize_string: \\u00A9 raw slice" {
+    const out = try tokenize_string("\"\\u00A9\"");
+    try std.testing.expectEqualSlices(u8, "\\u00A9", out.str);
 }
 
-test "tokenize_string: \\u0100 encodes as UTF-8 0xC4 0x80" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u0100\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xC4\x80", out.str);
+test "tokenize_string: \\u0100 raw slice" {
+    const out = try tokenize_string("\"\\u0100\"");
+    try std.testing.expectEqualSlices(u8, "\\u0100", out.str);
 }
 
-test "tokenize_string: \\u0022 decodes to literal quote" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u0022\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\"", out.str);
+test "tokenize_string: \\u0022 raw slice" {
+    const out = try tokenize_string("\"\\u0022\"");
+    try std.testing.expectEqualSlices(u8, "\\u0022", out.str);
 }
 
 test "tokenize_string: trailing backslash at EOF" {
-    const al = std.testing.allocator;
-    try std.testing.expectError(error.illigal_character, tokenize_string(al, "\"\\"));
+    try std.testing.expectError(error.illigal_character, tokenize_string("\"\\"));
 }
 
 test "tokenize: trailing backslash at EOF" {
@@ -369,8 +338,7 @@ test "tokenize: trailing backslash at EOF" {
 }
 
 test "tokenize_string: backslash then EOF after opening quote" {
-    const al = std.testing.allocator;
-    try std.testing.expectError(error.illigal_character, tokenize_string(al, "\"abc\\"));
+    try std.testing.expectError(error.illigal_character, tokenize_string("\"abc\\"));
 }
 
 test "tokenize: exponent without sign 0e5" {
@@ -463,7 +431,7 @@ test "tokenize: string with many escapes mixed" {
     const tokens = try tokenize(al, "\"a\\\"b\\\\c\\nd\\te\"");
     defer deinit_tokenize(al, tokens);
     try expectTag(.STR, tokens[0]);
-    try std.testing.expectEqualSlices(u8, "a\"b\\c\nd\te", tokens[0].STR);
+    try std.testing.expectEqualSlices(u8, "a\\\"b\\\\c\\nd\\te", tokens[0].STR);
 }
 
 test "tokenize: deeply nested arrays" {
@@ -477,12 +445,10 @@ test "tokenize: deeply nested arrays" {
     try expectTag(.R_SQUARE_BRACE, tokens[9]);
 }
 
-test "tokenize: string containing only \\u0000" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u0000\"");
-    defer al.free(out.str);
-    try std.testing.expectEqual(@as(usize, 1), out.str.len);
-    try std.testing.expectEqual(@as(u8, 0), out.str[0]);
+test "tokenize: string containing only \\u0000 raw" {
+    const out = try tokenize_string("\"\\u0000\"");
+    try std.testing.expectEqual(@as(usize, 6), out.str.len);
+    try std.testing.expectEqualSlices(u8, "\\u0000", out.str);
 }
 
 test "tokenize: negative fraction -0.25" {
@@ -509,52 +475,38 @@ test "tokenize: object with array value" {
     try expectTag(.R_CURLY_BRACE, tokens[8]);
 }
 
-test "tokenize_string: \\u0080 encodes to 0xC2 0x80" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u0080\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xC2\x80", out.str);
+test "tokenize_string: \\u0080 raw slice" {
+    const out = try tokenize_string("\"\\u0080\"");
+    try std.testing.expectEqualSlices(u8, "\\u0080", out.str);
 }
 
-test "tokenize_string: \\u07FF encodes to 0xDF 0xBF" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u07FF\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xDF\xBF", out.str);
+test "tokenize_string: \\u07FF raw slice" {
+    const out = try tokenize_string("\"\\u07FF\"");
+    try std.testing.expectEqualSlices(u8, "\\u07FF", out.str);
 }
 
-test "tokenize_string: \\u0800 encodes to 0xE0 0xA0 0x80" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u0800\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xE0\xA0\x80", out.str);
+test "tokenize_string: \\u0800 raw slice" {
+    const out = try tokenize_string("\"\\u0800\"");
+    try std.testing.expectEqualSlices(u8, "\\u0800", out.str);
 }
 
-test "tokenize_string: \\uFFFF encodes to 0xEF 0xBF 0xBF" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\uFFFF\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xEF\xBF\xBF", out.str);
+test "tokenize_string: \\uFFFF raw slice" {
+    const out = try tokenize_string("\"\\uFFFF\"");
+    try std.testing.expectEqualSlices(u8, "\\uFFFF", out.str);
 }
 
-test "tokenize_string: lowercase hex in \\u escape" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\u00a9\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xC2\xA9", out.str);
+test "tokenize_string: lowercase hex in \\u escape raw slice" {
+    const out = try tokenize_string("\"\\u00a9\"");
+    try std.testing.expectEqualSlices(u8, "\\u00a9", out.str);
 }
 
-test "tokenize_string: surrogate pair decodes to emoji" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"\\uD83D\\uDE00\"");
-    defer al.free(out.str);
-    try std.testing.expectEqualSlices(u8, "\xF0\x9F\x98\x80", out.str);
+test "tokenize_string: surrogate pair raw slice" {
+    const out = try tokenize_string("\"\\uD83D\\uDE00\"");
+    try std.testing.expectEqualSlices(u8, "\\uD83D\\uDE00", out.str);
 }
 
 test "tokenize_string: raw UTF-8 multibyte passes through" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "\"caf\xC3\xA9\"");
-    defer al.free(out.str);
+    const out = try tokenize_string("\"caf\xC3\xA9\"");
     try std.testing.expectEqualSlices(u8, "caf\xC3\xA9", out.str);
 }
 
@@ -568,15 +520,13 @@ test "tokenize_string: JSON-looking content inside string" {
 }
 
 test "tokenize_string: empty slice yields empty result" {
-    const al = std.testing.allocator;
-    const out = try tokenize_string(al, "");
+    const out = try tokenize_string("");
     try std.testing.expectEqual(@as(usize, 0), out.str.len);
     try std.testing.expectEqual(@as(usize, 0), out.i);
 }
 
 test "tokenize_string: single opening quote errors" {
-    const al = std.testing.allocator;
-    try std.testing.expectError(error.illigal_character, tokenize_string(al, "\""));
+    try std.testing.expectError(error.illigal_character, tokenize_string("\""));
 }
 
 test "tokenize: literal adjacent to number no whitespace" {
@@ -655,12 +605,12 @@ test "tokenize: \\u followed by only 3 hex then quote" {
     try std.testing.expectError(error.illigal_escape_sequence, tokenize(al, "\"\\u041\""));
 }
 
-test "tokenize: string with escaped unicode quote" {
+test "tokenize: string with escaped unicode quote raw" {
     const al = std.testing.allocator;
     const tokens = try tokenize(al, "\"a\\u0022b\"");
     defer deinit_tokenize(al, tokens);
     try expectTag(.STR, tokens[0]);
-    try std.testing.expectEqualSlices(u8, "a\"b", tokens[0].STR);
+    try std.testing.expectEqualSlices(u8, "a\\u0022b", tokens[0].STR);
 }
 
 test "tokenize: lone high-surrogate is rejected" {

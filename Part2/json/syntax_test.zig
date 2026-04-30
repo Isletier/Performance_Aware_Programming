@@ -36,6 +36,7 @@ test "parse_value: single STR token" {
 
     const tokens = [_]Tokens{ Tokens{ .STR = "hello" } };
     const out = try syntax_mod.parse_value(al, &tokens, &root);
+    defer syntax_mod.deinit_value(al, out.val);
     try std.testing.expectEqual(std.meta.Tag(Value).string, std.meta.activeTag(out.val));
     try std.testing.expectEqualSlices(u8, "hello", out.val.string);
     try std.testing.expectEqual(@as(usize, 0), out.tokens.len);
@@ -178,7 +179,7 @@ test "parse_array: empty array []" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .R_SQUARE_BRACE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 0), out.val.array.items.len);
     try std.testing.expectEqual(@as(usize, 0), out.tokens.len);
 }
@@ -190,7 +191,7 @@ test "parse_array: single bool element [true]" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .TRUE, .R_SQUARE_BRACE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 1), out.val.array.items.len);
 }
 
@@ -201,7 +202,7 @@ test "parse_array: two elements [true,false]" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .TRUE, .COMMA, .FALSE, .R_SQUARE_BRACE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 2), out.val.array.items.len);
 }
 
@@ -218,7 +219,7 @@ test "parse_array: array of numbers [1,2,3]" {
         .R_SQUARE_BRACE,
     };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 3), out.val.array.items.len);
 }
 
@@ -234,7 +235,7 @@ test "parse_array: array of strings" {
         .R_SQUARE_BRACE,
     };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 2), out.val.array.items.len);
 }
 
@@ -286,7 +287,7 @@ test "parse_array: nested arrays [[1],[2]]" {
         .R_SQUARE_BRACE,
     };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 2), out.val.array.items.len);
 }
 
@@ -297,7 +298,7 @@ test "parse_array: leftover tokens after ]" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .R_SQUARE_BRACE, .COMMA, .TRUE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer syntax_mod.deinit_array(al, out.val.array, true);
+    defer syntax_mod.deinit_array(al, out.val.array);
     try std.testing.expectEqual(@as(usize, 2), out.tokens.len);
 }
 
@@ -379,7 +380,7 @@ test "parse_object: single key-value {\"a\":1}" {
         .R_CURLY_BRACE,
     };
     const out = try syntax_mod.parse_object(al, &tokens, &root);
-    defer syntax_mod.deinit_value(al, out.val, true);
+    defer syntax_mod.deinit_value(al, out.val);
 }
 
 test "parse_object: multi key-value" {
@@ -394,7 +395,7 @@ test "parse_object: multi key-value" {
         .R_CURLY_BRACE,
     };
     const out = try syntax_mod.parse_object(al, &tokens, &root);
-    defer syntax_mod.deinit_value(al, out.val, true);
+    defer syntax_mod.deinit_value(al, out.val);
 }
 
 test "parse_object: missing colon errors" {
@@ -461,7 +462,7 @@ test "parse_object: object with array value" {
         .R_CURLY_BRACE,
     };
     const out = try syntax_mod.parse_object(al, &tokens, &root);
-    defer syntax_mod.deinit_value(al, out.val, true);
+    defer syntax_mod.deinit_value(al, out.val);
 }
 
 test "parse_object: nested object value" {
@@ -478,7 +479,7 @@ test "parse_object: nested object value" {
         .R_CURLY_BRACE,
     };
     const out = try syntax_mod.parse_object(al, &tokens, &root);
-    defer syntax_mod.deinit_value(al, out.val, true);
+    defer syntax_mod.deinit_value(al, out.val);
 }
 
 test "parse_object: STR after STR (missing colon and value) errors" {
@@ -594,6 +595,7 @@ test "parse_syntax: empty array" {
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .R_SQUARE_BRACE };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value);
     try std.testing.expectEqual(std.meta.Tag(Value).array, std.meta.activeTag(root.value));
 }
 
@@ -606,7 +608,7 @@ test "parse_syntax: simple object {\"a\":1}" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
 }
 
 test "parse_syntax: trailing tokens error" {
@@ -636,7 +638,7 @@ test "parse_syntax: array of mixed values" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
     try std.testing.expectEqual(std.meta.Tag(Value).array, std.meta.activeTag(root.value));
 }
 
@@ -647,7 +649,7 @@ test "parse_syntax: deeply nested arrays" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
 }
 
 test "parse_syntax: object containing array containing object" {
@@ -664,7 +666,7 @@ test "parse_syntax: object containing array containing object" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
 }
 
 test "parse_syntax: unmatched [ errors" {
@@ -703,7 +705,7 @@ test "parse_syntax: object with float value" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
 }
 
 test "parse_syntax: array of strings" {
@@ -717,7 +719,7 @@ test "parse_syntax: array of strings" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
 }
 
 test "parse_syntax: large object many keys" {
@@ -733,5 +735,249 @@ test "parse_syntax: large object many keys" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
-    defer syntax_mod.deinit_value(al, root.value, true);
+    defer syntax_mod.deinit_value(al, root.value);
+}
+
+// ---------- unescape_string ----------
+
+test "unescape_string: plain ascii" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "hello");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "hello", out);
+}
+
+test "unescape_string: empty string" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "");
+    defer al.free(out);
+    try std.testing.expectEqual(@as(usize, 0), out.len);
+}
+
+test "unescape_string: newline escape" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "line\\nbreak");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "line\nbreak", out);
+}
+
+test "unescape_string: tab and carriage return" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "a\\tb\\rc");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "a\tb\rc", out);
+}
+
+test "unescape_string: escaped quote and backslash" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "a\\\"b\\\\c");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "a\"b\\c", out);
+}
+
+test "unescape_string: \\u0041 decodes to A" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "\\u0041");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "A", out);
+}
+
+test "unescape_string: surrogate pair decodes to emoji" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "\\uD83D\\uDE00");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "\xF0\x9F\x98\x80", out);
+}
+
+test "unescape_string: \\u00A9 copyright sign UTF-8" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "\\u00A9");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "\xC2\xA9", out);
+}
+
+test "unescape_string: raw UTF-8 multibyte passes through" {
+    const al = std.testing.allocator;
+    const out = try syntax_mod.unescape_string(al, "caf\xC3\xA9");
+    defer al.free(out);
+    try std.testing.expectEqualSlices(u8, "caf\xC3\xA9", out);
+}
+
+// ---------- complex parse_syntax scenarios ----------
+
+test "parse_syntax: object with string value - content verified" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "key" }, .COLON, Tokens{ .STR = "val" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqualSlices(u8, "key", obj.keys.items[0]);
+    try std.testing.expectEqualSlices(u8, "val", obj.values.items[0].string);
+}
+
+test "parse_syntax: object with escape in value string" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "msg" }, .COLON, Tokens{ .STR = "hello\\nworld" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    try std.testing.expectEqualSlices(u8, "hello\nworld", root.value.Object.plain.values.items[0].string);
+}
+
+test "parse_syntax: object with escape in key" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "hel\\nlo" }, .COLON, Tokens{ .NUMBER = "1" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    try std.testing.expectEqualSlices(u8, "hel\nlo", root.value.Object.plain.keys.items[0]);
+}
+
+test "parse_syntax: array of strings content verified" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        Tokens{ .STR = "foo" }, .COMMA,
+        Tokens{ .STR = "bar" },
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 2), arr.items.len);
+    try std.testing.expectEqualSlices(u8, "foo", arr.items[0].string);
+    try std.testing.expectEqualSlices(u8, "bar", arr.items[1].string);
+}
+
+test "parse_syntax: object all value types" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "s" }, .COLON, Tokens{ .STR = "hi" },        .COMMA,
+        Tokens{ .STR = "n" }, .COLON, Tokens{ .NUMBER = "42" },     .COMMA,
+        Tokens{ .STR = "f" }, .COLON, Tokens{ .NUMBER = "1.5" },    .COMMA,
+        Tokens{ .STR = "b" }, .COLON, .TRUE,                        .COMMA,
+        Tokens{ .STR = "z" }, .COLON, .NULL,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqual(@as(usize, 5), obj.keys.items.len);
+    try std.testing.expectEqualSlices(u8, "hi", obj.values.items[0].string);
+    try std.testing.expectEqual(@as(i64, 42), obj.values.items[1].integer);
+    try std.testing.expectEqual(true, obj.values.items[3].boolean);
+    try std.testing.expectEqual(std.meta.Tag(Value).null_obj, std.meta.activeTag(obj.values.items[4]));
+}
+
+test "parse_syntax: array of objects" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        .L_CURLY_BRACE, Tokens{ .STR = "x" }, .COLON, Tokens{ .NUMBER = "1" }, .R_CURLY_BRACE, .COMMA,
+        .L_CURLY_BRACE, Tokens{ .STR = "x" }, .COLON, Tokens{ .NUMBER = "2" }, .R_CURLY_BRACE,
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 2), arr.items.len);
+    try std.testing.expectEqual(std.meta.Tag(Value).Object, std.meta.activeTag(arr.items[0]));
+    try std.testing.expectEqual(std.meta.Tag(Value).Object, std.meta.activeTag(arr.items[1]));
+}
+
+test "parse_syntax: object keys all present and correct" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "first" },  .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "second" }, .COLON, Tokens{ .NUMBER = "2" }, .COMMA,
+        Tokens{ .STR = "third" },  .COLON, Tokens{ .NUMBER = "3" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqual(@as(usize, 3), obj.keys.items.len);
+    try std.testing.expectEqualSlices(u8, "first",  obj.keys.items[0]);
+    try std.testing.expectEqualSlices(u8, "second", obj.keys.items[1]);
+    try std.testing.expectEqualSlices(u8, "third",  obj.keys.items[2]);
+    try std.testing.expectEqual(@as(i64, 1), obj.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), obj.values.items[1].integer);
+    try std.testing.expectEqual(@as(i64, 3), obj.values.items[2].integer);
+}
+
+test "parse_syntax: nested object content verified" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "outer" }, .COLON,
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "inner" }, .COLON, Tokens{ .STR = "value" },
+        .R_CURLY_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const inner = root.value.Object.plain.values.items[0].Object.plain;
+    try std.testing.expectEqualSlices(u8, "inner", inner.keys.items[0]);
+    try std.testing.expectEqualSlices(u8, "value", inner.values.items[0].string);
+}
+
+test "parse_syntax: object with array value content verified" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "nums" }, .COLON,
+        .L_SQUARE_BRACE, Tokens{ .NUMBER = "10" }, .COMMA, Tokens{ .NUMBER = "20" }, .R_SQUARE_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.Object.plain.values.items[0].array;
+    try std.testing.expectEqual(@as(usize, 2), arr.items.len);
+    try std.testing.expectEqual(@as(i64, 10), arr.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 20), arr.items[1].integer);
+}
+
+test "parse_syntax: array of mixed scalars content verified" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        Tokens{ .NUMBER = "1" }, .COMMA,
+        .TRUE,                   .COMMA,
+        .NULL,                   .COMMA,
+        Tokens{ .STR = "end" },
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 4), arr.items.len);
+    try std.testing.expectEqual(@as(i64, 1), arr.items[0].integer);
+    try std.testing.expectEqual(true, arr.items[1].boolean);
+    try std.testing.expectEqual(std.meta.Tag(Value).null_obj, std.meta.activeTag(arr.items[2]));
+    try std.testing.expectEqualSlices(u8, "end", arr.items[3].string);
+}
+
+test "parse_syntax: string with unicode escape content verified" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        Tokens{ .STR = "\\u0041\\u0042\\u0043" },
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    try std.testing.expectEqualSlices(u8, "ABC", root.value.array.items[0].string);
 }

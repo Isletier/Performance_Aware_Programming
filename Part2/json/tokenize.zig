@@ -28,7 +28,7 @@ pub fn tokenize_literal(literal: []const u8, src: []const u8) !void {
     return;
 }
 
-pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []const u8, i: usize } {
+pub fn tokenize_string(src: []const u8) !struct { str: []const u8, i: usize } {
     if (src.len == 0) {
         return .{ .str = &.{}, .i = 0 };
     }
@@ -38,8 +38,6 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
     }
     var i: usize = 1;
 
-    var str: std.ArrayList(u8) = .empty;
-    errdefer str.deinit(al);
     while (i < src.len) {
         switch(src[i]) {
             0...31 => {
@@ -51,36 +49,7 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
                     return Errors.illigal_character;
                 }
                 switch(src[i]) {
-                    '\"' => {
-                        try str.append(al, '\"');
-                        i += 1;
-                    },
-                    '\\' => {
-                        try str.append(al, '\\');
-                        i += 1;
-                    },
-                    '/' => {
-                        try str.append(al, '/');
-                        i += 1;
-                    },
-                    'b' => {
-                        try str.append(al, '\x08');
-                        i += 1;
-                    },
-                    'f' => {
-                        try str.append(al, 0x0C);
-                        i += 1;
-                    },
-                    'n' => {
-                        try str.append(al, '\n');
-                        i += 1;
-                    },
-                    'r' => {
-                        try str.append(al, '\r');
-                        i += 1;
-                    },
-                    't' => {
-                        try str.append(al, '\t');
+                    '\"', '\\', '/', 'b', 'f', 'n', 'r', 't' => {
                         i += 1;
                     },
                     'u' => {
@@ -91,7 +60,6 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
                             catch return Errors.illigal_escape_sequence;
                         i += 4;
 
-                        var cp: u21 = high;
                         if (high >= 0xD800 and high <= 0xDBFF) {
                             if (i + 6 > src.len or src[i] != '\\' or src[i + 1] != 'u') {
                                 return Errors.illigal_escape_sequence;
@@ -99,19 +67,10 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
                             const low = std.fmt.parseUnsigned(u16, src[i + 2..i + 6], 16)
                                 catch return Errors.illigal_escape_sequence;
                             if (low < 0xDC00 or low > 0xDFFF) return Errors.illigal_escape_sequence;
-
-                            const hi_bits: u21 = @as(u21, high) - 0xD800;
-                            const lo_bits: u21 = @as(u21, low) - 0xDC00;
-                            cp = 0x10000 + (hi_bits << 10) + lo_bits;
                             i += 6;
                         } else if (high >= 0xDC00 and high <= 0xDFFF) {
                             return Errors.illigal_escape_sequence;
                         }
-
-                        var buf: [4]u8 = undefined;
-                        const n = std.unicode.utf8Encode(cp, &buf)
-                            catch return Errors.illigal_escape_sequence;
-                        try str.appendSlice(al, buf[0..n]);
                     },
                     else => {
                         return Errors.illigal_escape_sequence;
@@ -122,7 +81,6 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
                 break;
             },
             else => {
-                try str.append(al, src[i]);
                 i += 1;
             }
         }
@@ -132,7 +90,7 @@ pub fn tokenize_string(al: std.mem.Allocator, src: []const u8) !struct { str: []
         return Errors.illigal_character;
     }
 
-    return .{.str = try str.toOwnedSlice(al), .i = i + 1};
+    return .{ .str = src[1..i], .i = i + 1 };
 }
 
 pub fn validate_number(number: []const u8) bool {
@@ -310,7 +268,7 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
                 i += 4;
             },
             '\"' => {
-                const result = try tokenize_string(al, src[i..]);
+                const result = try tokenize_string(src[i..]);
                 try tokens.append(al, Tokens { .STR = result.str });
                 i += result.i;
             },
@@ -339,14 +297,5 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
 
 
 pub fn deinit_tokenize(al: std.mem.Allocator, tokens: []const Tokens) void {
-    for (tokens) |token| {
-        switch(token) {
-            Tokens.STR => |s| {
-                al.free(s);
-            },
-            else => {}
-        }
-    }
-
     al.free(tokens);
 }
