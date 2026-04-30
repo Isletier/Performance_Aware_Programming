@@ -8,11 +8,12 @@ const Object = syntax_mod.Object;
 const Object_plain = syntax_mod.Object_plain;
 const Object_indexed = syntax_mod.Object_indexed;
 const Json = syntax_mod.Json;
+const json_object_map = syntax_mod.json_object_map;
 
 fn make_root(al: std.mem.Allocator) Json {
     return Json{
         .postfix_count = 0,
-        .indexes = std.StringHashMap(usize).init(al),
+        .indexes = json_object_map.init(al),
         .value = .null_obj,
     };
 }
@@ -177,8 +178,8 @@ test "parse_array: empty array []" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .R_SQUARE_BRACE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
-    try std.testing.expectEqual(@as(usize, 0), out.val.array.len);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
+    try std.testing.expectEqual(@as(usize, 0), out.val.array.items.len);
     try std.testing.expectEqual(@as(usize, 0), out.tokens.len);
 }
 
@@ -189,8 +190,8 @@ test "parse_array: single bool element [true]" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .TRUE, .R_SQUARE_BRACE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
-    try std.testing.expectEqual(@as(usize, 1), out.val.array.len);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
+    try std.testing.expectEqual(@as(usize, 1), out.val.array.items.len);
 }
 
 test "parse_array: two elements [true,false]" {
@@ -200,8 +201,8 @@ test "parse_array: two elements [true,false]" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .TRUE, .COMMA, .FALSE, .R_SQUARE_BRACE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
-    try std.testing.expectEqual(@as(usize, 2), out.val.array.len);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
+    try std.testing.expectEqual(@as(usize, 2), out.val.array.items.len);
 }
 
 test "parse_array: array of numbers [1,2,3]" {
@@ -217,8 +218,8 @@ test "parse_array: array of numbers [1,2,3]" {
         .R_SQUARE_BRACE,
     };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
-    try std.testing.expectEqual(@as(usize, 3), out.val.array.len);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
+    try std.testing.expectEqual(@as(usize, 3), out.val.array.items.len);
 }
 
 test "parse_array: array of strings" {
@@ -233,8 +234,8 @@ test "parse_array: array of strings" {
         .R_SQUARE_BRACE,
     };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
-    try std.testing.expectEqual(@as(usize, 2), out.val.array.len);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
+    try std.testing.expectEqual(@as(usize, 2), out.val.array.items.len);
 }
 
 test "parse_array: leading comma errors" {
@@ -285,8 +286,8 @@ test "parse_array: nested arrays [[1],[2]]" {
         .R_SQUARE_BRACE,
     };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
-    try std.testing.expectEqual(@as(usize, 2), out.val.array.len);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
+    try std.testing.expectEqual(@as(usize, 2), out.val.array.items.len);
 }
 
 test "parse_array: leftover tokens after ]" {
@@ -296,7 +297,7 @@ test "parse_array: leftover tokens after ]" {
 
     const tokens = [_]Tokens{ .L_SQUARE_BRACE, .R_SQUARE_BRACE, .COMMA, .TRUE };
     const out = try syntax_mod.parse_array(al, &tokens, &root);
-    defer al.free(out.val.array);
+    defer syntax_mod.deinit_array(al, out.val.array, true);
     try std.testing.expectEqual(@as(usize, 2), out.tokens.len);
 }
 
@@ -377,7 +378,8 @@ test "parse_object: single key-value {\"a\":1}" {
         Tokens{ .STR = "a" }, .COLON, Tokens{ .NUMBER = "1" },
         .R_CURLY_BRACE,
     };
-    _ = try syntax_mod.parse_object(al, &tokens, &root);
+    const out = try syntax_mod.parse_object(al, &tokens, &root);
+    defer syntax_mod.deinit_value(al, out.val, true);
 }
 
 test "parse_object: multi key-value" {
@@ -391,7 +393,8 @@ test "parse_object: multi key-value" {
         Tokens{ .STR = "b" }, .COLON, Tokens{ .NUMBER = "2" },
         .R_CURLY_BRACE,
     };
-    _ = try syntax_mod.parse_object(al, &tokens, &root);
+    const out = try syntax_mod.parse_object(al, &tokens, &root);
+    defer syntax_mod.deinit_value(al, out.val, true);
 }
 
 test "parse_object: missing colon errors" {
@@ -457,7 +460,8 @@ test "parse_object: object with array value" {
         .L_SQUARE_BRACE, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .NUMBER = "2" }, .R_SQUARE_BRACE,
         .R_CURLY_BRACE,
     };
-    _ = try syntax_mod.parse_object(al, &tokens, &root);
+    const out = try syntax_mod.parse_object(al, &tokens, &root);
+    defer syntax_mod.deinit_value(al, out.val, true);
 }
 
 test "parse_object: nested object value" {
@@ -473,7 +477,8 @@ test "parse_object: nested object value" {
         .R_CURLY_BRACE,
         .R_CURLY_BRACE,
     };
-    _ = try syntax_mod.parse_object(al, &tokens, &root);
+    const out = try syntax_mod.parse_object(al, &tokens, &root);
+    defer syntax_mod.deinit_value(al, out.val, true);
 }
 
 test "parse_object: STR after STR (missing colon and value) errors" {
@@ -518,52 +523,6 @@ test "check_for_key: absent returns false" {
     try std.testing.expectEqual(false, syntax_mod.check_for_key(keys, "xyz"));
 }
 
-// ---------- transform_key ----------
-
-test "transform_key: appends control byte and postfix" {
-    const al = std.testing.allocator;
-    const out = try syntax_mod.transform_key(al, 5, "key");
-    defer al.free(out);
-    try std.testing.expect(out.len > 3);
-}
-
-test "transform_key: zero postfix" {
-    const al = std.testing.allocator;
-    const out = try syntax_mod.transform_key(al, 0, "k");
-    defer al.free(out);
-    try std.testing.expect(out.len > 1);
-}
-
-// ---------- to_plain_obj / to_indexed_obj ----------
-
-test "to_plain_obj: builds Object_plain from arraylists" {
-    const al = std.testing.allocator;
-    var keys: std.ArrayList([]const u8) = .empty;
-    var values: std.ArrayList(Value) = .empty;
-    try keys.append(al, "a");
-    try values.append(al, Value{ .integer = 1 });
-
-    const obj = try syntax_mod.to_plain_obj(al, keys, values);
-    defer al.free(obj.plain.keys);
-    defer al.free(obj.plain.values);
-    try std.testing.expectEqual(@as(usize, 1), obj.plain.keys.len);
-    try std.testing.expectEqual(@as(usize, 1), obj.plain.values.len);
-}
-
-test "to_indexed_obj: ident_prefix copied from root" {
-    const al = std.testing.allocator;
-    var root = make_root(al);
-    defer root.indexes.deinit();
-    root.postfix_count = 7;
-
-    var values: std.ArrayList(Value) = .empty;
-    try values.append(al, Value{ .integer = 1 });
-
-    const obj = try syntax_mod.to_indexed_obj(al, &root, values);
-    defer al.free(obj.indexed.values);
-    try std.testing.expectEqual(@as(u64, 7), obj.indexed.ident_postfix);
-}
-
 // ---------- index_plain_objects ----------
 
 test "index_plain_objects: empty keys is a no-op" {
@@ -571,10 +530,8 @@ test "index_plain_objects: empty keys is a no-op" {
     var root = make_root(al);
     defer root.indexes.deinit();
 
-    var keys: std.ArrayList([]const u8) = .empty;
-    defer keys.deinit(al);
-
-    try syntax_mod.index_plain_objects(al, &root, keys);
+    const plain = Object_plain{ .keys = .empty, .values = .empty };
+    try syntax_mod.index_plain_object(&root, plain);
     try std.testing.expectEqual(@as(u32, 0), root.indexes.count());
 }
 
@@ -588,7 +545,8 @@ test "index_plain_objects: populates index map" {
     try keys.append(al, "a");
     try keys.append(al, "b");
 
-    try syntax_mod.index_plain_objects(al, &root, keys);
+    const plain = Object_plain{ .keys = keys, .values = .empty };
+    try syntax_mod.index_plain_object(&root, plain);
     try std.testing.expect(root.indexes.count() >= 2);
 }
 
@@ -648,6 +606,7 @@ test "parse_syntax: simple object {\"a\":1}" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
 }
 
 test "parse_syntax: trailing tokens error" {
@@ -677,6 +636,7 @@ test "parse_syntax: array of mixed values" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
     try std.testing.expectEqual(std.meta.Tag(Value).array, std.meta.activeTag(root.value));
 }
 
@@ -687,6 +647,7 @@ test "parse_syntax: deeply nested arrays" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
 }
 
 test "parse_syntax: object containing array containing object" {
@@ -703,6 +664,7 @@ test "parse_syntax: object containing array containing object" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
 }
 
 test "parse_syntax: unmatched [ errors" {
@@ -741,6 +703,7 @@ test "parse_syntax: object with float value" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
 }
 
 test "parse_syntax: array of strings" {
@@ -754,6 +717,7 @@ test "parse_syntax: array of strings" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
 }
 
 test "parse_syntax: large object many keys" {
@@ -769,4 +733,5 @@ test "parse_syntax: large object many keys" {
     };
     var root = try syntax_mod.parse_syntax(al, &tokens);
     defer root.indexes.deinit();
+    defer syntax_mod.deinit_value(al, root.value, true);
 }

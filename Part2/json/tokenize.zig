@@ -214,7 +214,7 @@ pub fn validate_exponent(exponent: []const u8) bool {
     return true;
 }
 
-pub fn tokenize_number(al: std.mem.Allocator, src: []const u8) ![]const u8 {
+pub fn tokenize_number(src: []const u8) ![]const u8 {
     var i:          usize   = 0;
     var exp:        usize   = src.len;
     var dot:        usize   = src.len;
@@ -265,9 +265,7 @@ pub fn tokenize_number(al: std.mem.Allocator, src: []const u8) ![]const u8 {
         return Errors.illigal_character;
     }
 
-    const number_token = try al.alloc(u8, token.len);
-    @memcpy(number_token, token);
-    return number_token;
+    return token;
 }
 
 pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
@@ -325,7 +323,7 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
                 i += 1;
             },
             '-', '0'...'9' => {
-                const num_token = Tokens { .NUMBER = try tokenize_number(al, src[i..])};
+                const num_token = Tokens { .NUMBER = try tokenize_number(src[i..])};
                 i += num_token.NUMBER.len;
                 try tokens.append(al, num_token);
             },
@@ -345,9 +343,6 @@ pub fn deinit_tokenize(al: std.mem.Allocator, tokens: []const Tokens) void {
         switch(token) {
             Tokens.STR => |s| {
                 al.free(s);
-            },
-            Tokens.NUMBER => |n| {
-                al.free(n);
             },
             else => {}
         }
