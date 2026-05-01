@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Tokens = union(enum) {
+pub const Token = union(enum) {
     L_CURLY_BRACE,
     R_CURLY_BRACE,
     L_SQUARE_BRACE,
