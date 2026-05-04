@@ -2,6 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const print = std.debug.print;
 
+const haverstine = @import("haverstine_ref").haverstine_ref;
+
 pub fn print_help_message() void {
     print("Usage: haverstine_gen [cluster/universal] [seed] [count]\n", .{});
 }
@@ -12,7 +14,7 @@ const gen_type = enum {
 };
 
 const CLUSTER_NUM_CAP = 8;
-const CLUSTER_RANGE_CAP = 40.0;
+const CLUSTER_RANGE_CAP = 180.0;
 
 pub fn main(init: std.process.Init) !void {
     var it = init.minimal.args.iterate();
@@ -63,10 +65,11 @@ pub fn rand_with_pin(rand: std.Random, comptime T: type, range: T, pin_point: T)
 pub fn gen_universal(io: Io, seed: u64, count: u64) !void {
     const std_out_handle = Io.File.stdout();
 
-    var stdout_buf: [512]u8 = undefined;
+    const stdout_buf = try std.heap.page_allocator.alloc(u8, count * 128 + 64);
+    defer std.heap.page_allocator.free(stdout_buf);
     var float_buf: [512]u8 = undefined;
 
-    var stdout_buffered = std_out_handle.writer(io, &stdout_buf);
+    var stdout_buffered = std_out_handle.writer(io, stdout_buf);
     const stdout = &stdout_buffered.interface;
 
     var prng = std.Random.DefaultPrng.init(seed);
@@ -77,7 +80,9 @@ pub fn gen_universal(io: Io, seed: u64, count: u64) !void {
     const entry_mask        = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}},\n";
     const entry_mask_last   = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}}\n";
     try stdout.writeAll(json_head);
-    try stdout.flush();
+
+    var sum: f64 = 0;
+    const sum_coef: f64 = 1.0 / @as(f64, @floatFromInt(count));
 
     var i = count;
     while(i > 0) {
@@ -86,20 +91,21 @@ pub fn gen_universal(io: Io, seed: u64, count: u64) !void {
         const x2 = rand_with_pin(rand, f64, 360.0, 0);
         const y2 = rand_with_pin(rand, f64, 180.0, 0);
 
-        if (i != 1) {
-            const line = try std.fmt.bufPrint(&float_buf, entry_mask, .{ x1, y1, x2, y2 });
-            try stdout.writeAll(line);
-            try stdout.flush();
-        } else {
-            const line = try std.fmt.bufPrint(&float_buf, entry_mask_last, .{ x1, y1, x2, y2 });
-            try stdout.writeAll(line);
-            try stdout.flush();
-        }
+        sum += sum_coef * haverstine(x1, y1, x2, y2, 6372.8);
+
+        const line = if (i != 1)
+            try std.fmt.bufPrint(&float_buf, entry_mask, .{ x1, y1, x2, y2 })
+        else
+            try std.fmt.bufPrint(&float_buf, entry_mask_last, .{ x1, y1, x2, y2 });
+        try stdout.writeAll(line);
+
         i -= 1;
     }
 
     try stdout.writeAll(json_tail);
     try stdout.flush();
+
+    print("Reference Haverstine sum: {}\n", .{sum});
 }
 
 pub fn get_cluster(rand: std.Random, cluster_num: u64) usize {
@@ -109,10 +115,11 @@ pub fn get_cluster(rand: std.Random, cluster_num: u64) usize {
 pub fn gen_cluster(io: Io, seed: u64, count: u64) !void {
     const std_out_handle = Io.File.stdout();
 
-    var stdout_buf: [512]u8 = undefined;
+    const stdout_buf = try std.heap.page_allocator.alloc(u8, count * 128 + 64);
+    defer std.heap.page_allocator.free(stdout_buf);
     var float_buf: [512]u8 = undefined;
 
-    var stdout_buffered = std_out_handle.writer(io, &stdout_buf);
+    var stdout_buffered = std_out_handle.writer(io, stdout_buf);
     const stdout = &stdout_buffered.interface;
 
     var prng = std.Random.DefaultPrng.init(seed);
@@ -123,7 +130,6 @@ pub fn gen_cluster(io: Io, seed: u64, count: u64) !void {
     const entry_mask        = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}},\n";
     const entry_mask_last   = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}}\n";
     try stdout.writeAll(json_head);
-    try stdout.flush();
 
     const cluster_num = rand.intRangeAtMost(u64, 1, CLUSTER_NUM_CAP);
     const cluster_range = rand.float(f64) * CLUSTER_RANGE_CAP;
@@ -136,6 +142,9 @@ pub fn gen_cluster(io: Io, seed: u64, count: u64) !void {
         i += 2;
     }
 
+    var sum: f64 = 0;
+    const sum_coef: f64 = 1.0 / @as(f64, @floatFromInt(count));
+
     i = count;
     while(i > 0) {
         const cluster_idx = get_cluster(rand, cluster_num);
@@ -147,20 +156,21 @@ pub fn gen_cluster(io: Io, seed: u64, count: u64) !void {
         const x2 = rand_with_pin(rand, f64, cluster_range, pin_x);
         const y2 = rand_with_pin(rand, f64, cluster_range, pin_y);
 
-        if (i != 1) {
-            const line = try std.fmt.bufPrint(&float_buf, entry_mask, .{ x1, y1, x2, y2 });
-            try stdout.writeAll(line);
-            try stdout.flush();
-        } else {
-            const line = try std.fmt.bufPrint(&float_buf, entry_mask_last, .{ x1, y1, x2, y2 });
-            try stdout.writeAll(line);
-            try stdout.flush();
-        }
+        sum += sum_coef * haverstine(x1, y1, x2, y2, 6372.8);
+
+        const line = if (i != 1)
+            try std.fmt.bufPrint(&float_buf, entry_mask, .{ x1, y1, x2, y2 })
+        else
+            try std.fmt.bufPrint(&float_buf, entry_mask_last, .{ x1, y1, x2, y2 });
+        try stdout.writeAll(line);
+
         i -= 1;
     }
 
     try stdout.writeAll(json_tail);
     try stdout.flush();
+    print("Reference Haverstine sum: {}\n", .{sum});
+
 }
 
 pub fn gen(io: Io, g: gen_type, seed: u64, count: u64) !void {

@@ -3,7 +3,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const json_mod = b.addModule("Part2", .{
+    const json_mod = b.addModule("json", .{
         .root_source_file = b.path("json/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
         .root_module = json_mod,
         .use_llvm = true,
     });
+
     const run_test = b.addRunArtifact(json_test);
 
     const test_step = b.step("test", "Run all tests");
@@ -23,21 +24,11 @@ pub fn build(b: *std.Build) void {
     const test_install_step = b.step("test-install", "Install test binary for gdb");
     test_install_step.dependOn(&install_test.step);
 
-    const json_mod_debug = b.addModule("Part2-debug", .{
-        .root_source_file = b.path("json/root.zig"),
+    const haverstine_ref_mod = b.addModule("haverstine_ref", .{
+        .root_source_file = b.path("haverstine/haverstine_ref.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = optimize,
     });
-    const json_test_debug = b.addTest(.{
-        .name = "json-test-debug",
-        .root_module = json_mod_debug,
-        .use_llvm = true,
-    });
-    json_test_debug.root_module.strip = false;
-    json_test_debug.root_module.omit_frame_pointer = false;
-    const install_test_debug = b.addInstallArtifact(json_test_debug, .{});
-    const test_debug_step = b.step("test-debug", "Build unoptimized test binary with full debug info");
-    test_debug_step.dependOn(&install_test_debug.step);
 
     const HaverstineGeneratorExe = b.addExecutable(.{
         .name = "haverstine_gen",
@@ -48,6 +39,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+
+    HaverstineGeneratorExe.root_module.addImport("haverstine_ref", haverstine_ref_mod);
 
     b.installArtifact(HaverstineGeneratorExe);
 
