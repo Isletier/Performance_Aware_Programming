@@ -19,8 +19,6 @@ pub fn parse(al: std.mem.Allocator, src: []const u8) !Json {
 test {
     _ = @import("tokenize_test.zig");
     _ = @import("syntax_test.zig");
-
-
 }
 
 test "shit" {
