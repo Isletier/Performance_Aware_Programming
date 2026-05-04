@@ -1602,3 +1602,4 @@ test "complex: error inside nested array (no leak)" {
         syntax_mod.parse_syntax(al, &tokens),
     );
 }
+

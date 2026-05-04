@@ -4,32 +4,6 @@ const tokenize_mod  = @import("tokenize.zig");
 const Token = tokenize_mod.Token;
 const deinit_tokenize = tokenize_mod.deinit_tokenize;
 
-pub const Object_plain = struct {
-    keys:   std.ArrayList([]const u8),
-    values: std.ArrayList(Value)
-};
-
-pub const Object_indexed = struct {
-    ident_postfix:  u64,
-    indexation:     *json_object_map,
-    values:         std.ArrayList(Value)
-};
-
-pub const Object = union(enum) {
-    plain   : Object_plain,
-    indexed : Object_indexed
-};
-
-pub const Value = union(enum) {
-    string      : []const u8,
-    array       : std.ArrayList(Value),
-    Object      : Object,
-    integer     : i64,
-    float       : f64,
-    boolean     : bool,
-    null_obj
-};
-
 pub const json_obj_key = struct {
     key:    []const u8,
     obj_id: u64
@@ -53,6 +27,71 @@ const json_object_context = struct {
 
 pub const json_object_map = std.HashMap(json_obj_key, u64, json_object_context, std.hash_map.default_max_load_percentage);
 
+pub const Object_plain = struct {
+    keys:   std.ArrayList([]const u8),
+    values: std.ArrayList(Value)
+};
+
+pub const Object_indexed = struct {
+    ident_postfix:  u64,
+    indexation:     *json_object_map,
+    values:         std.ArrayList(Value)
+};
+
+pub const Object = union(enum) {
+    plain   : Object_plain,
+    indexed : Object_indexed,
+
+    pub fn get(self: Object, key: []const u8) !Value {
+        switch(self) {
+            .plain => |pl| {
+                var i: usize = 0;
+                const items = pl.keys.items;
+                while(i < items.len) : (i += 1){
+                    if (std.mem.eql(u8, items[i], key)) {
+                        return pl.values.items[i];
+                    }
+                }
+
+                return Errors.no_object_found;
+            },
+            .indexed => |ind| {
+                const k: json_obj_key = .{ .key = key, .obj_id = ind.ident_postfix };
+                return ind.values.items[ind.indexation.get(k).?];
+            }
+        }
+    }
+
+    pub fn put(self: *Object, al: std.mem.Allocator, key: []const u8, value: Value) !void {
+        switch (self.*) {
+            .plain => |*pl| {
+                try pl.keys.append(al, key);
+                try pl.values.append(al, value);
+            },
+            .indexed => |*ind| {
+                const next_idx = ind.values.items.len;
+                const k: json_obj_key = .{ 
+                    .key = key, 
+                    .obj_id = ind.ident_postfix 
+                };
+                
+                try ind.indexation.put(k, @intCast(next_idx));
+                try ind.values.append(al, value);
+            },
+        }
+    }
+};
+
+pub const Value = union(enum) {
+    string      : []const u8,
+    array       : std.ArrayList(Value),
+    Object      : Object,
+    integer     : i64,
+    float       : f64,
+    boolean     : bool,
+    null_obj
+};
+
 pub const Json = struct {
     postfix_count:  u64,
     indexes:        json_object_map,
@@ -62,7 +101,8 @@ pub const Json = struct {
 
 pub const Errors = error {
     object_closing_brace,
-    incorrect_value_token
+    incorrect_value_token,
+    no_object_found
 };
 
 const JsonError = std.mem.Allocator.Error || Errors || std.fmt.ParseFloatError || std.fmt.ParseIntError;
@@ -511,3 +551,4 @@ pub fn deinit_json(al: std.mem.Allocator, json_: Json) void {
     }
     json.indexes.deinit();
 }
+

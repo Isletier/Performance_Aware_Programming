@@ -295,7 +295,3 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Token {
     return try tokens.toOwnedSlice(al);
 }
 
-
-pub fn deinit_tokenize(al: std.mem.Allocator, tokens: []const Token) void {
-    al.free(tokens);
-}
