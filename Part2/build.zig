@@ -53,4 +53,19 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    const AwareExe = b.addExecutable(.{
+        .name = "aware",
+        .use_llvm = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("aware/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    AwareExe.root_module.addImport("json",           json_mod);
+    AwareExe.root_module.addImport("haverstine_ref", haverstine_ref_mod);
+
+    b.installArtifact(AwareExe);
 }

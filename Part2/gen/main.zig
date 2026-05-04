@@ -77,8 +77,8 @@ pub fn gen_universal(io: Io, seed: u64, count: u64) !void {
 
     const json_head = "{\n    \"pairs\":[\n";
     const json_tail = "    ]\n}\n";
-    const entry_mask        = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}},\n";
-    const entry_mask_last   = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}}\n";
+    const entry_mask        = "        {{\"x1\": {d}, \"y1\":{d}, \"x2\": {d}, \"y2\": {d}}},\n";
+    const entry_mask_last   = "        {{\"x1\": {d}, \"y1\":{d}, \"x2\": {d}, \"y2\": {d}}}\n";
     try stdout.writeAll(json_head);
 
     var sum: f64 = 0;
@@ -127,8 +127,8 @@ pub fn gen_cluster(io: Io, seed: u64, count: u64) !void {
 
     const json_head = "{\n    \"pairs\":[\n";
     const json_tail = "    ]\n}\n";
-    const entry_mask        = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}},\n";
-    const entry_mask_last   = "        {{\"x1\": \"{d}\", \"y1\":\"{d}\", \"x2\": \"{d}\", \"y2\": \"{d}\"}}\n";
+    const entry_mask        = "        {{\"x1\": {d}, \"y1\":{d}, \"x2\": {d}, \"y2\": {d}}},\n";
+    const entry_mask_last   = "        {{\"x1\": {d}, \"y1\":{d}, \"x2\": {d}, \"y2\": {d}}}\n";
     try stdout.writeAll(json_head);
 
     const cluster_num = rand.intRangeAtMost(u64, 1, CLUSTER_NUM_CAP);
