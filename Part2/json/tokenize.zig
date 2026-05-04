@@ -226,8 +226,8 @@ pub fn tokenize_number(src: []const u8) ![]const u8 {
     return token;
 }
 
-pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
-    var tokens: std.ArrayList(Tokens) = .empty;
+pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Token {
+    var tokens: std.ArrayList(Token) = .empty;
     errdefer tokens.deinit(al);
 
     var i: usize = 0;
@@ -237,51 +237,51 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
                 i += 1;
             },
             '{' => {
-                try tokens.append(al, Tokens.L_CURLY_BRACE);
+                try tokens.append(al, Token.L_CURLY_BRACE);
                 i += 1;
             },
             '}' => {
-                try tokens.append(al, Tokens.R_CURLY_BRACE);
+                try tokens.append(al, Token.R_CURLY_BRACE);
                 i += 1;
             },
             ',' => {
-                try tokens.append(al, Tokens.COMMA);
+                try tokens.append(al, Token.COMMA);
                 i += 1;
             },
             ':' => {
-                try tokens.append(al, Tokens.COLON);
+                try tokens.append(al, Token.COLON);
                 i += 1;
             },
             't' => {
                 try tokenize_literal("true", src[i..]);
-                try tokens.append(al, Tokens.TRUE);
+                try tokens.append(al, Token.TRUE);
                 i += 4;
             },
             'f' => {
                 try tokenize_literal("false", src[i..]);
-                try tokens.append(al, Tokens.FALSE);
+                try tokens.append(al, Token.FALSE);
                 i += 5;
             },
             'n' => {
                 try tokenize_literal("null", src[i..]);
-                try tokens.append(al, Tokens.NULL);
+                try tokens.append(al, Token.NULL);
                 i += 4;
             },
             '\"' => {
                 const result = try tokenize_string(src[i..]);
-                try tokens.append(al, Tokens { .STR = result.str });
+                try tokens.append(al, Token { .STR = result.str });
                 i += result.i;
             },
             '[' => {
-                try tokens.append(al, Tokens.L_SQUARE_BRACE);
+                try tokens.append(al, Token.L_SQUARE_BRACE);
                 i += 1;
             },
             ']' => {
-                try tokens.append(al, Tokens.R_SQUARE_BRACE);
+                try tokens.append(al, Token.R_SQUARE_BRACE);
                 i += 1;
             },
             '-', '0'...'9' => {
-                const num_token = Tokens { .NUMBER = try tokenize_number(src[i..])};
+                const num_token = Token { .NUMBER = try tokenize_number(src[i..])};
                 i += num_token.NUMBER.len;
                 try tokens.append(al, num_token);
             },
@@ -296,6 +296,6 @@ pub fn tokenize(al: std.mem.Allocator, src: []const u8) ![]Tokens {
 }
 
 
-pub fn deinit_tokenize(al: std.mem.Allocator, tokens: []const Tokens) void {
+pub fn deinit_tokenize(al: std.mem.Allocator, tokens: []const Token) void {
     al.free(tokens);
 }

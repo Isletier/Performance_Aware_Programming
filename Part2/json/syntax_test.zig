@@ -2,7 +2,7 @@ const std = @import("std");
 const syntax_mod = @import("syntax.zig");
 const tokenize_mod = @import("tokenize.zig");
 
-const Tokens = tokenize_mod.Tokens;
+const Tokens = tokenize_mod.Token;
 const Value = syntax_mod.Value;
 const Object = syntax_mod.Object;
 const Object_plain = syntax_mod.Object_plain;
@@ -532,7 +532,7 @@ test "index_plain_objects: empty keys is a no-op" {
     defer root.indexes.deinit();
 
     const plain = Object_plain{ .keys = .empty, .values = .empty };
-    try syntax_mod.index_plain_object(&root, plain);
+    try syntax_mod.index_plain_object(al, &root, plain, 0);
     try std.testing.expectEqual(@as(u32, 0), root.indexes.count());
 }
 
@@ -547,7 +547,7 @@ test "index_plain_objects: populates index map" {
     try keys.append(al, "b");
 
     const plain = Object_plain{ .keys = keys, .values = .empty };
-    try syntax_mod.index_plain_object(&root, plain);
+    try syntax_mod.index_plain_object(al, &root, plain, 0);
     try std.testing.expect(root.indexes.count() >= 2);
 }
 
@@ -980,4 +980,625 @@ test "parse_syntax: string with unicode escape content verified" {
     const root = try syntax_mod.parse_syntax(al, &tokens);
     defer syntax_mod.deinit_json(al, root);
     try std.testing.expectEqualSlices(u8, "ABC", root.value.array.items[0].string);
+}
+
+// ---------- indexing logic ----------
+// Objects switch from Object_plain to Object_indexed when the sum of key string
+// lengths in parse_plain reaches 512.  The trigger structure is:
+//   { <long_key>: v1, ... }
+// After the first key-value-comma pair, the loop re-checks `total < 512`.
+// If already >= 512 it exits and calls parse_indexed for remaining pairs.
+
+const long_key = "a" ** 512;
+
+test "indexed: basic values are correct" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "b" },      .COLON, Tokens{ .NUMBER = "2" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+
+    try std.testing.expectEqual(std.meta.Tag(Object).indexed, std.meta.activeTag(root.value.Object));
+    const obj = root.value.Object.indexed;
+    try std.testing.expectEqual(@as(usize, 2), obj.values.items.len);
+    try std.testing.expectEqual(@as(i64, 1), obj.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), obj.values.items[1].integer);
+}
+
+test "indexed: map lookup by key returns correct position" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "10" }, .COMMA,
+        Tokens{ .STR = "x" },      .COLON, Tokens{ .NUMBER = "20" }, .COMMA,
+        Tokens{ .STR = "y" },      .COLON, Tokens{ .NUMBER = "30" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+
+    const id = root.value.Object.indexed.ident_postfix;
+    const idx_long = root.indexes.get(.{ .key = long_key, .obj_id = id });
+    const idx_x    = root.indexes.get(.{ .key = "x",        .obj_id = id });
+    const idx_y    = root.indexes.get(.{ .key = "y",        .obj_id = id });
+
+    try std.testing.expect(idx_long != null);
+    try std.testing.expect(idx_x    != null);
+    try std.testing.expect(idx_y    != null);
+    try std.testing.expectEqual(@as(u64, 0), idx_long.?);
+    try std.testing.expectEqual(@as(u64, 1), idx_x.?);
+    try std.testing.expectEqual(@as(u64, 2), idx_y.?);
+}
+
+test "indexed: duplicate key in plain section errors (no leak)" {
+    // duplicate detected inside parse_plain before indexing
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "k" }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "k" }, .COLON, Tokens{ .NUMBER = "2" },
+        .R_CURLY_BRACE,
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "indexed: duplicate key in indexed section errors (no leak)" {
+    // first key triggers plain->indexed handoff; duplicate in indexed section
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "dup" },    .COLON, Tokens{ .NUMBER = "2" }, .COMMA,
+        Tokens{ .STR = "dup" },    .COLON, Tokens{ .NUMBER = "3" },
+        .R_CURLY_BRACE,
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "indexed: missing closing brace errors (no leak)" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "b" },      .COLON, Tokens{ .NUMBER = "2" },
+        // missing R_CURLY_BRACE
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "indexed: trailing comma errors (no leak)" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "b" },      .COLON, Tokens{ .NUMBER = "2" }, .COMMA,
+        .R_CURLY_BRACE,
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "indexed: two separate indexed objects in array have different IDs" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        // first object
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "k" },      .COLON, Tokens{ .NUMBER = "2" },
+        .R_CURLY_BRACE, .COMMA,
+        // second object — same key names, different object
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "3" }, .COMMA,
+        Tokens{ .STR = "k" },      .COLON, Tokens{ .NUMBER = "4" },
+        .R_CURLY_BRACE,
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 2), arr.items.len);
+
+    const id0 = arr.items[0].Object.indexed.ident_postfix;
+    const id1 = arr.items[1].Object.indexed.ident_postfix;
+    try std.testing.expect(id0 != id1);
+
+    // same key name maps to different positions under different IDs
+    const p0 = root.indexes.get(.{ .key = "k", .obj_id = id0 });
+    const p1 = root.indexes.get(.{ .key = "k", .obj_id = id1 });
+    try std.testing.expect(p0 != null);
+    try std.testing.expect(p1 != null);
+    try std.testing.expectEqual(@as(u64, 1), p0.?);
+    try std.testing.expectEqual(@as(u64, 1), p1.?);
+}
+
+test "indexed: nested indexed inside plain outer" {
+    // outer is plain (short keys), inner is indexed (long key)
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "outer" }, .COLON,
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "7" }, .COMMA,
+        Tokens{ .STR = "n" },      .COLON, Tokens{ .NUMBER = "8" },
+        .R_CURLY_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+
+    const outer = root.value.Object.plain;
+    try std.testing.expectEqual(@as(usize, 1), outer.keys.items.len);
+    const inner = outer.values.items[0].Object.indexed;
+    try std.testing.expectEqual(@as(i64, 7), inner.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 8), inner.values.items[1].integer);
+}
+
+test "indexed: string values in indexed object" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .STR = "hello" }, .COMMA,
+        Tokens{ .STR = "b" },      .COLON, Tokens{ .STR = "world" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+
+    const obj = root.value.Object.indexed;
+    try std.testing.expectEqualSlices(u8, "hello", obj.values.items[0].string);
+    try std.testing.expectEqualSlices(u8, "world", obj.values.items[1].string);
+}
+
+test "indexed: many keys in indexed section" {
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON, Tokens{ .NUMBER = "0" }, .COMMA,
+        Tokens{ .STR = "k1" }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .STR = "k2" }, .COLON, Tokens{ .NUMBER = "2" }, .COMMA,
+        Tokens{ .STR = "k3" }, .COLON, Tokens{ .NUMBER = "3" }, .COMMA,
+        Tokens{ .STR = "k4" }, .COLON, Tokens{ .NUMBER = "4" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+
+    const obj = root.value.Object.indexed;
+    try std.testing.expectEqual(@as(usize, 5), obj.values.items.len);
+
+    const id = obj.ident_postfix;
+    try std.testing.expectEqual(@as(u64, 0), root.indexes.get(.{ .key = long_key, .obj_id = id }).?);
+    try std.testing.expectEqual(@as(u64, 3), root.indexes.get(.{ .key = "k3",      .obj_id = id }).?);
+    try std.testing.expectEqual(@as(u64, 4), root.indexes.get(.{ .key = "k4",      .obj_id = id }).?);
+}
+
+// ---------- complex / random tests ----------
+
+test "complex: flat object with all scalar types" {
+    // { "i": -99, "f": 1.5e2, "s": "hi", "b": false, "n": null, "t": true }
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "i" }, .COLON, Tokens{ .NUMBER = "-99" },  .COMMA,
+        Tokens{ .STR = "f" }, .COLON, Tokens{ .NUMBER = "1.5e2" }, .COMMA,
+        Tokens{ .STR = "s" }, .COLON, Tokens{ .STR = "hi" },       .COMMA,
+        Tokens{ .STR = "b" }, .COLON, .FALSE,                       .COMMA,
+        Tokens{ .STR = "n" }, .COLON, .NULL,                        .COMMA,
+        Tokens{ .STR = "t" }, .COLON, .TRUE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqual(@as(usize, 6), obj.values.items.len);
+    try std.testing.expectEqual(@as(i64, -99),  obj.values.items[0].integer);
+    try std.testing.expectEqual(std.meta.Tag(Value).float, std.meta.activeTag(obj.values.items[1]));
+    try std.testing.expectEqualSlices(u8, "hi", obj.values.items[2].string);
+    try std.testing.expectEqual(false,           obj.values.items[3].boolean);
+    try std.testing.expectEqual(std.meta.Tag(Value).null_obj, std.meta.activeTag(obj.values.items[4]));
+    try std.testing.expectEqual(true,            obj.values.items[5].boolean);
+}
+
+test "complex: array of mixed scalars, 10 elements" {
+    // [0, 1, 2, 3, 4, 5, true, false, null, "end"]
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        Tokens{ .NUMBER = "0" }, .COMMA,
+        Tokens{ .NUMBER = "1" }, .COMMA,
+        Tokens{ .NUMBER = "2" }, .COMMA,
+        Tokens{ .NUMBER = "3" }, .COMMA,
+        Tokens{ .NUMBER = "4" }, .COMMA,
+        Tokens{ .NUMBER = "5" }, .COMMA,
+        .TRUE,                   .COMMA,
+        .FALSE,                  .COMMA,
+        .NULL,                   .COMMA,
+        Tokens{ .STR = "end" },
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 10), arr.items.len);
+    try std.testing.expectEqual(@as(i64, 0), arr.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 5), arr.items[5].integer);
+    try std.testing.expectEqual(true,  arr.items[6].boolean);
+    try std.testing.expectEqual(false, arr.items[7].boolean);
+    try std.testing.expectEqual(std.meta.Tag(Value).null_obj, std.meta.activeTag(arr.items[8]));
+    try std.testing.expectEqualSlices(u8, "end", arr.items[9].string);
+}
+
+test "complex: object whose values are all arrays" {
+    // { "a": [1,2], "b": [3,4], "c": [5,6] }
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "a" }, .COLON,
+            .L_SQUARE_BRACE, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .NUMBER = "2" }, .R_SQUARE_BRACE,
+        .COMMA,
+        Tokens{ .STR = "b" }, .COLON,
+            .L_SQUARE_BRACE, Tokens{ .NUMBER = "3" }, .COMMA, Tokens{ .NUMBER = "4" }, .R_SQUARE_BRACE,
+        .COMMA,
+        Tokens{ .STR = "c" }, .COLON,
+            .L_SQUARE_BRACE, Tokens{ .NUMBER = "5" }, .COMMA, Tokens{ .NUMBER = "6" }, .R_SQUARE_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqual(@as(usize, 3), obj.keys.items.len);
+    try std.testing.expectEqual(@as(i64, 1), obj.values.items[0].array.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 4), obj.values.items[1].array.items[1].integer);
+    try std.testing.expectEqual(@as(i64, 6), obj.values.items[2].array.items[1].integer);
+}
+
+test "complex: array of objects, each with two fields" {
+    // [{"x":1,"y":2}, {"x":3,"y":4}, {"x":5,"y":6}]
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        .L_CURLY_BRACE, Tokens{ .STR = "x" }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .STR = "y" }, .COLON, Tokens{ .NUMBER = "2" }, .R_CURLY_BRACE, .COMMA,
+        .L_CURLY_BRACE, Tokens{ .STR = "x" }, .COLON, Tokens{ .NUMBER = "3" }, .COMMA, Tokens{ .STR = "y" }, .COLON, Tokens{ .NUMBER = "4" }, .R_CURLY_BRACE, .COMMA,
+        .L_CURLY_BRACE, Tokens{ .STR = "x" }, .COLON, Tokens{ .NUMBER = "5" }, .COMMA, Tokens{ .STR = "y" }, .COLON, Tokens{ .NUMBER = "6" }, .R_CURLY_BRACE,
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 3), arr.items.len);
+    try std.testing.expectEqual(@as(i64, 1), arr.items[0].Object.plain.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 4), arr.items[1].Object.plain.values.items[1].integer);
+    try std.testing.expectEqual(@as(i64, 5), arr.items[2].Object.plain.values.items[0].integer);
+}
+
+test "complex: 4-level deep nesting" {
+    // {"a":{"b":{"c":{"d":42}}}}
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE, Tokens{ .STR = "a" }, .COLON,
+          .L_CURLY_BRACE, Tokens{ .STR = "b" }, .COLON,
+            .L_CURLY_BRACE, Tokens{ .STR = "c" }, .COLON,
+              .L_CURLY_BRACE, Tokens{ .STR = "d" }, .COLON, Tokens{ .NUMBER = "42" },
+              .R_CURLY_BRACE,
+            .R_CURLY_BRACE,
+          .R_CURLY_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const d = root.value.Object.plain
+        .values.items[0].Object.plain
+        .values.items[0].Object.plain
+        .values.items[0].Object.plain
+        .values.items[0].integer;
+    try std.testing.expectEqual(@as(i64, 42), d);
+}
+
+test "complex: object value is array of objects" {
+    // {"items":[{"v":1},{"v":2},{"v":3}]}
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "items" }, .COLON,
+        .L_SQUARE_BRACE,
+          .L_CURLY_BRACE, Tokens{ .STR = "v" }, .COLON, Tokens{ .NUMBER = "1" }, .R_CURLY_BRACE, .COMMA,
+          .L_CURLY_BRACE, Tokens{ .STR = "v" }, .COLON, Tokens{ .NUMBER = "2" }, .R_CURLY_BRACE, .COMMA,
+          .L_CURLY_BRACE, Tokens{ .STR = "v" }, .COLON, Tokens{ .NUMBER = "3" }, .R_CURLY_BRACE,
+        .R_SQUARE_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const items = root.value.Object.plain.values.items[0].array;
+    try std.testing.expectEqual(@as(usize, 3), items.items.len);
+    try std.testing.expectEqual(@as(i64, 1), items.items[0].Object.plain.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), items.items[1].Object.plain.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 3), items.items[2].Object.plain.values.items[0].integer);
+}
+
+test "complex: sibling arrays of different types" {
+    // {"ints":[1,2,3],"strs":["a","b"],"bools":[true,false,true]}
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "ints" }, .COLON,
+        .L_SQUARE_BRACE, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .NUMBER = "2" }, .COMMA, Tokens{ .NUMBER = "3" }, .R_SQUARE_BRACE, .COMMA,
+        Tokens{ .STR = "strs" }, .COLON,
+        .L_SQUARE_BRACE, Tokens{ .STR = "a" }, .COMMA, Tokens{ .STR = "b" }, .R_SQUARE_BRACE, .COMMA,
+        Tokens{ .STR = "bools" }, .COLON,
+        .L_SQUARE_BRACE, .TRUE, .COMMA, .FALSE, .COMMA, .TRUE, .R_SQUARE_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqual(@as(usize, 3), obj.keys.items.len);
+    try std.testing.expectEqual(@as(i64, 3),   obj.values.items[0].array.items[2].integer);
+    try std.testing.expectEqual(@as(usize, 2), obj.values.items[1].array.items.len);
+    try std.testing.expectEqual(true,           obj.values.items[2].array.items[0].boolean);
+    try std.testing.expectEqual(false,          obj.values.items[2].array.items[1].boolean);
+}
+
+test "complex: empty arrays and objects as values" {
+    // {"e_obj":{},"e_arr":[],"val":1}
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "e_obj" }, .COLON, .L_CURLY_BRACE,  .R_CURLY_BRACE,  .COMMA,
+        Tokens{ .STR = "e_arr" }, .COLON, .L_SQUARE_BRACE, .R_SQUARE_BRACE, .COMMA,
+        Tokens{ .STR = "val" },   .COLON, Tokens{ .NUMBER = "1" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqual(std.meta.Tag(Object).plain, std.meta.activeTag(obj.values.items[0].Object));
+    try std.testing.expectEqual(std.meta.Tag(Value).array,  std.meta.activeTag(obj.values.items[1]));
+    try std.testing.expectEqual(@as(usize, 0), obj.values.items[1].array.items.len);
+    try std.testing.expectEqual(@as(i64, 1), obj.values.items[2].integer);
+}
+
+test "complex: array containing empty array and empty object" {
+    // [[],[],{}]
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        .L_SQUARE_BRACE, .R_SQUARE_BRACE, .COMMA,
+        .L_SQUARE_BRACE, .R_SQUARE_BRACE, .COMMA,
+        .L_CURLY_BRACE,  .R_CURLY_BRACE,
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 3), arr.items.len);
+    try std.testing.expectEqual(std.meta.Tag(Value).array,  std.meta.activeTag(arr.items[0]));
+    try std.testing.expectEqual(std.meta.Tag(Value).array,  std.meta.activeTag(arr.items[1]));
+    try std.testing.expectEqual(std.meta.Tag(Value).Object, std.meta.activeTag(arr.items[2]));
+}
+
+test "complex: negative and fractional numbers" {
+    // [-1, -0.5, 1e-3, -1e10]
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        Tokens{ .NUMBER = "-1" },    .COMMA,
+        Tokens{ .NUMBER = "-0.5" },  .COMMA,
+        Tokens{ .NUMBER = "1e-3" },  .COMMA,
+        Tokens{ .NUMBER = "-1e10" },
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 4), arr.items.len);
+    try std.testing.expectEqual(@as(i64, -1), arr.items[0].integer);
+    try std.testing.expectEqual(std.meta.Tag(Value).float, std.meta.activeTag(arr.items[1]));
+    try std.testing.expectEqual(std.meta.Tag(Value).float, std.meta.activeTag(arr.items[2]));
+    try std.testing.expectEqual(std.meta.Tag(Value).float, std.meta.activeTag(arr.items[3]));
+}
+
+test "complex: object with escaped keys and string values" {
+    // {"he\\nllo": "wo\\trld", "q\\"ote": "back\\\\slash"}
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "he\\nllo" },    .COLON, Tokens{ .STR = "wo\\trld" },      .COMMA,
+        Tokens{ .STR = "back\\\\key" }, .COLON, Tokens{ .STR = "back\\\\val" },
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqualSlices(u8, "he\nllo",    obj.keys.items[0]);
+    try std.testing.expectEqualSlices(u8, "wo\trld",    obj.values.items[0].string);
+    try std.testing.expectEqualSlices(u8, "back\\key",  obj.keys.items[1]);
+    try std.testing.expectEqualSlices(u8, "back\\val",  obj.values.items[1].string);
+}
+
+test "complex: deeply nested arrays" {
+    // [[[[[42]]]]]
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE, .L_SQUARE_BRACE, .L_SQUARE_BRACE, .L_SQUARE_BRACE, .L_SQUARE_BRACE,
+        Tokens{ .NUMBER = "42" },
+        .R_SQUARE_BRACE, .R_SQUARE_BRACE, .R_SQUARE_BRACE, .R_SQUARE_BRACE, .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const v = root.value
+        .array.items[0]
+        .array.items[0]
+        .array.items[0]
+        .array.items[0]
+        .array.items[0]
+        .integer;
+    try std.testing.expectEqual(@as(i64, 42), v);
+}
+
+test "complex: record-like object with nested address" {
+    // {"name":"Alice","age":30,"active":true,"score":9.5,"address":{"city":"NY","zip":"10001"}}
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "name" },   .COLON, Tokens{ .STR = "Alice" },   .COMMA,
+        Tokens{ .STR = "age" },    .COLON, Tokens{ .NUMBER = "30" },   .COMMA,
+        Tokens{ .STR = "active" }, .COLON, .TRUE,                       .COMMA,
+        Tokens{ .STR = "score" },  .COLON, Tokens{ .NUMBER = "9.5" },  .COMMA,
+        Tokens{ .STR = "address" }, .COLON,
+        .L_CURLY_BRACE,
+            Tokens{ .STR = "city" }, .COLON, Tokens{ .STR = "NY" },      .COMMA,
+            Tokens{ .STR = "zip" },  .COLON, Tokens{ .STR = "10001" },
+        .R_CURLY_BRACE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.plain;
+    try std.testing.expectEqualSlices(u8, "Alice", obj.values.items[0].string);
+    try std.testing.expectEqual(@as(i64, 30),      obj.values.items[1].integer);
+    try std.testing.expectEqual(true,               obj.values.items[2].boolean);
+    const addr = obj.values.items[4].Object.plain;
+    try std.testing.expectEqualSlices(u8, "NY",    addr.values.items[0].string);
+    try std.testing.expectEqualSlices(u8, "10001", addr.values.items[1].string);
+}
+
+test "complex: list of records with nulls" {
+    // [{"id":1,"val":"a"},{"id":2,"val":null},{"id":3,"val":"c"}]
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        .L_CURLY_BRACE, Tokens{ .STR = "id" }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .STR = "val" }, .COLON, Tokens{ .STR = "a" },  .R_CURLY_BRACE, .COMMA,
+        .L_CURLY_BRACE, Tokens{ .STR = "id" }, .COLON, Tokens{ .NUMBER = "2" }, .COMMA, Tokens{ .STR = "val" }, .COLON, .NULL,                   .R_CURLY_BRACE, .COMMA,
+        .L_CURLY_BRACE, Tokens{ .STR = "id" }, .COLON, Tokens{ .NUMBER = "3" }, .COMMA, Tokens{ .STR = "val" }, .COLON, Tokens{ .STR = "c" },  .R_CURLY_BRACE,
+        .R_SQUARE_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const arr = root.value.array;
+    try std.testing.expectEqual(@as(usize, 3), arr.items.len);
+    try std.testing.expectEqualSlices(u8, "a", arr.items[0].Object.plain.values.items[1].string);
+    try std.testing.expectEqual(std.meta.Tag(Value).null_obj, std.meta.activeTag(arr.items[1].Object.plain.values.items[1]));
+    try std.testing.expectEqual(@as(i64, 3), arr.items[2].Object.plain.values.items[0].integer);
+}
+
+test "complex: indexed object with array values" {
+    // { <long_key>: [1,2,3], "b": [4,5], "c": true }
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON,
+            .L_SQUARE_BRACE, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .NUMBER = "2" }, .COMMA, Tokens{ .NUMBER = "3" }, .R_SQUARE_BRACE,
+        .COMMA,
+        Tokens{ .STR = "b" }, .COLON,
+            .L_SQUARE_BRACE, Tokens{ .NUMBER = "4" }, .COMMA, Tokens{ .NUMBER = "5" }, .R_SQUARE_BRACE,
+        .COMMA,
+        Tokens{ .STR = "c" }, .COLON, .TRUE,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.indexed;
+    try std.testing.expectEqual(@as(usize, 3), obj.values.items.len);
+    try std.testing.expectEqual(@as(i64, 3),   obj.values.items[0].array.items[2].integer);
+    try std.testing.expectEqual(@as(i64, 4),   obj.values.items[1].array.items[0].integer);
+    try std.testing.expectEqual(true,           obj.values.items[2].boolean);
+}
+
+test "complex: indexed object with nested plain object value" {
+    // { <long_key>: {"x":1,"y":2}, "meta": null }
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = long_key }, .COLON,
+            .L_CURLY_BRACE, Tokens{ .STR = "x" }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .STR = "y" }, .COLON, Tokens{ .NUMBER = "2" }, .R_CURLY_BRACE,
+        .COMMA,
+        Tokens{ .STR = "meta" }, .COLON, .NULL,
+        .R_CURLY_BRACE,
+    };
+    const root = try syntax_mod.parse_syntax(al, &tokens);
+    defer syntax_mod.deinit_json(al, root);
+    const obj = root.value.Object.indexed;
+    const inner = obj.values.items[0].Object.plain;
+    try std.testing.expectEqual(@as(i64, 1), inner.values.items[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), inner.values.items[1].integer);
+    try std.testing.expectEqual(std.meta.Tag(Value).null_obj, std.meta.activeTag(obj.values.items[1]));
+}
+
+test "complex: error mid-array after strings allocated (no leak)" {
+    // ["ok", "fine", <missing closing bracket>
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_SQUARE_BRACE,
+        Tokens{ .STR = "ok" }, .COMMA, Tokens{ .STR = "fine" },
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "complex: error mid-object after string values allocated (no leak)" {
+    // {"a":"hello","b":"world"  <- missing closing brace
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "a" }, .COLON, Tokens{ .STR = "hello" }, .COMMA,
+        Tokens{ .STR = "b" }, .COLON, Tokens{ .STR = "world" },
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "complex: error inside nested object (no leak)" {
+    // {"outer":{"a":1,"b":  <- value missing
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "outer" }, .COLON,
+        .L_CURLY_BRACE,
+            Tokens{ .STR = "a" }, .COLON, Tokens{ .NUMBER = "1" }, .COMMA,
+            Tokens{ .STR = "b" }, .COLON,   // no value
+        .R_CURLY_BRACE,
+        .R_CURLY_BRACE,
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
+}
+
+test "complex: error inside nested array (no leak)" {
+    // {"k":[[1,2,   <- unterminated inner array
+    const al = std.testing.allocator;
+    const tokens = [_]Tokens{
+        .L_CURLY_BRACE,
+        Tokens{ .STR = "k" }, .COLON,
+        .L_SQUARE_BRACE,
+            .L_SQUARE_BRACE, Tokens{ .NUMBER = "1" }, .COMMA, Tokens{ .NUMBER = "2" }, .COMMA,
+        // missing R_SQUARE_BRACE and outer close
+    };
+    try std.testing.expectError(
+        error.incorrect_value_token,
+        syntax_mod.parse_syntax(al, &tokens),
+    );
 }

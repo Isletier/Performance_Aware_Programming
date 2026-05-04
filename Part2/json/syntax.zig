@@ -30,13 +30,13 @@ pub const Value = union(enum) {
     null_obj
 };
 
-pub const json_object_key = struct {
+pub const json_obj_key = struct {
     key:    []const u8,
     obj_id: u64
 };
 
 const json_object_context = struct {
-    pub fn hash(self: json_object_context, key: json_object_key) u64 {
+    pub fn hash(self: json_object_context, key: json_obj_key) u64 {
         _ = self;
         var h = std.hash.Wyhash.init(0);
         h.update(key.key);
@@ -45,13 +45,13 @@ const json_object_context = struct {
         return h.final();
     }
 
-    pub fn eql(self: json_object_context, a: json_object_key, b: json_object_key) bool {
+    pub fn eql(self: json_object_context, a: json_obj_key, b: json_obj_key) bool {
         _ = self;
         return std.mem.eql(u8, a.key, b.key) and a.obj_id == b.obj_id;
     }
 };
 
-pub const json_object_map = std.HashMap(json_object_key, u64, json_object_context, std.hash_map.default_max_load_percentage);
+pub const json_object_map = std.HashMap(json_obj_key, u64, json_object_context, std.hash_map.default_max_load_percentage);
 
 pub const Json = struct {
     postfix_count:  u64,
@@ -69,7 +69,9 @@ const JsonError = std.mem.Allocator.Error || Errors || std.fmt.ParseFloatError |
 
 const ParseResult = JsonError!struct { val: Value, tokens: []const Token };
 
-const ParseResultPlain = JsonError!struct { val: Value, tokens: []const Token, obj: Object_plain };
+const ParseResultPlain = JsonError!struct { obj: Object_plain, tokens: []const Token, need_indexation: bool };
+
+const ParseResultIndexed = JsonError!struct { obj: Object_indexed, tokens: []const Token };
 
 pub fn unescape_string(al: std.mem.Allocator, raw: []const u8) ![]u8 {
     var str: std.ArrayList(u8) = .empty;
@@ -199,54 +201,72 @@ pub fn check_for_key(keys: std.ArrayList([]const u8), key: []const u8) bool {
     return false;
 }
 
-pub fn index_plain_object(root: *Json, plain: Object_plain) !void {
+pub fn index_plain_object(al: std.mem.Allocator, root: *Json, plain: Object_plain, id: usize) !void {
     var i: usize = 0;
     const keys_entries = plain.keys.items;
 
+
     while(i < keys_entries.len) : (i += 1) {
-        try root.*.indexes.put( .{ .key = keys_entries[i], .obj_id = root.*.postfix_count }, i);
+        root.*.indexes.put( .{ .key = keys_entries[i], .obj_id = id }, i) catch {
+            break;
+        };
+    }
+
+    while(i < keys_entries.len) : (i += 1) {
+        al.free(keys_entries[i]);
     }
 
     return;
 }
 
-pub fn append_key(al: std.mem.Allocator, keys: std.ArrayList([]const u8), token: Token) !usize {
+pub fn append_key(al: std.mem.Allocator, keys: *std.ArrayList([]const u8), token: Token) !usize {
     if (token != .STR) {
         return Errors.incorrect_value_token;
     }
 
     const current_key = try unescape_string(al, token.STR);
-    errdefer current_key;
+    errdefer al.free(current_key);
 
-    if(check_for_key(keys, current_key)) {
+    if(check_for_key(keys.*, current_key)) {
         return Errors.incorrect_value_token;
     }
-    try keys.append(al, current_key.?);
+    try keys.append(al, current_key);
 
     return current_key.len;
 }
 
-pub fn append_value(al: std.mem.Allocator, value: std.ArrayList(Value), token: Token) !usize {
+
+pub fn append_key_root(al: std.mem.Allocator, root: *Json, token: Token, id: usize, pos: usize) !void {
     if (token != .STR) {
         return Errors.incorrect_value_token;
     }
 
     const current_key = try unescape_string(al, token.STR);
-    errdefer current_key;
+    errdefer al.free(current_key);
 
-    if(check_for_key(keys, current_key)) {
+    const key: json_obj_key = .{ .key = current_key, .obj_id = id };
+    if(root.*.indexes.contains(key)) {
         return Errors.incorrect_value_token;
     }
-    try keys.append(al, current_key.?);
 
-    return current_key.len;
+    try root.*.indexes.put(key, pos);
+
+    return;
+}
+
+pub fn append_value(al: std.mem.Allocator, values: *std.ArrayList(Value), tokens: []const Token, root: *Json) ![]const Token {
+    const result = try parse_value(al, tokens, root);
+    errdefer deinit_value(al, result.val);
+
+    try values.append(al, result.val);
+
+    return result.tokens;
 }
 
 pub fn parse_plain(al: std.mem.Allocator, tokens: []const Token, root: *Json) ParseResultPlain {
     var tokens_temp = tokens[1..];
-    var object:      Object_plain = .{ .keys = .empty, .values = .empty };
-    errdefer deinit_plain(al, object);
-    defer root.*.postfix_count += 1;
+    var object_plain: Object_plain = .{ .keys = .empty, .values = .empty };
+    errdefer deinit_plain(al, object_plain);
 
     var total_str_len_count: usize = 0;
     var prev_comma = false;
@@ -255,31 +275,24 @@ pub fn parse_plain(al: std.mem.Allocator, tokens: []const Token, root: *Json) Pa
             if(prev_comma) {
                 return Errors.incorrect_value_token;
             }
-            return .{ .val = .{ .Object = object }, .tokens = tokens_temp[1..] };
+            return .{ .obj = object_plain, .tokens = tokens_temp[1..], .need_indexation = false };
         }
 
         prev_comma = false;
 
-        total_str_len_count += try append_key(al, object.plain.keys, tokens_temp[0]);
+        total_str_len_count += try append_key(al, &object_plain.keys, tokens_temp[0]);
         tokens_temp = tokens_temp[1..];
 
-        if (tokens_temp.len == 0) {
+        if (tokens_temp.len == 0 or tokens_temp[0] != .COLON) {
             return Errors.incorrect_value_token;
         }
+        tokens_temp = tokens_temp[1..];
 
-        if (tokens_temp[0] != .COLON) {
-            return Errors.incorrect_value_token;
-        }
-
-        const result = try parse_value(al, tokens_temp[1..], root);
-        errdefer deinit_value(al, result.val);
-        tokens_temp = result.tokens;
+        tokens_temp = try append_value(al, &object_plain.values, tokens_temp, root);
 
         if (tokens_temp.len == 0) {
             return Errors.incorrect_value_token;
         }
-
-        try object.plain.values.append(al, result.val);
 
         switch(tokens_temp[0]) {
             .COMMA => {
@@ -287,7 +300,7 @@ pub fn parse_plain(al: std.mem.Allocator, tokens: []const Token, root: *Json) Pa
                 tokens_temp = tokens_temp[1..];
             },
             .R_CURLY_BRACE => {
-                return .{ .val = .{ .Object = object }, .tokens = tokens_temp[1..] };
+                return .{ .obj = object_plain, .tokens = tokens_temp[1..], .need_indexation = false };
             },
             else => {
                 return Errors.incorrect_value_token;
@@ -295,7 +308,66 @@ pub fn parse_plain(al: std.mem.Allocator, tokens: []const Token, root: *Json) Pa
         }
     }
 
+    return .{ .obj = object_plain, .tokens = tokens_temp, .need_indexation = true };
+}
 
+pub fn parse_indexed(al: std.mem.Allocator, tokens: []const Token, root: *Json, plain: Object_plain) ParseResultIndexed {
+    var tokens_temp = tokens;
+    const id = root.postfix_count;
+    defer root.postfix_count += 1;
+
+    var plain_keys = plain.keys;
+    defer plain_keys.deinit(al);
+
+    var object: Object_indexed = .{
+        .ident_postfix = id,
+        .indexation = &root.indexes,
+        .values = plain.values
+    };
+    errdefer deinit_indexed(al, object);
+
+    try index_plain_object(al, root, plain, id);
+
+    var prev_comma = false;
+
+    while(tokens_temp.len != 0) {
+        if (tokens_temp[0] == .R_CURLY_BRACE) {
+            if(prev_comma) {
+                return Errors.incorrect_value_token;
+            }
+
+            return .{ .obj = object, .tokens = tokens_temp[1..] };
+        }
+        prev_comma = false;
+
+        try append_key_root(al, root, tokens_temp[0], id, object.values.items.len);
+        tokens_temp = tokens_temp[1..];
+
+        if (tokens_temp.len == 0 or tokens_temp[0] != .COLON) {
+            return Errors.incorrect_value_token;
+        }
+        tokens_temp = tokens_temp[1..];
+
+        tokens_temp = try append_value(al, &object.values, tokens_temp, root);
+        if (tokens_temp.len == 0) {
+            return Errors.incorrect_value_token;
+        }
+
+        switch(tokens_temp[0]) {
+            .COMMA => {
+                prev_comma = true;
+                tokens_temp = tokens_temp[1..];
+            },
+            .R_CURLY_BRACE => {
+                return .{ .obj = object, .tokens = tokens_temp[1..] };
+            },
+            else => {
+                return Errors.incorrect_value_token;
+            }
+        }
+    }
+
+    return Errors.incorrect_value_token;
 }
 
 
@@ -308,58 +380,16 @@ pub fn parse_object(al: std.mem.Allocator, tokens: []const Token, root: *Json) P
         return Errors.incorrect_value_token;
     }
 
+    const result_pl = try parse_plain(al, tokens, root);
+    const tokens_temp = result_pl.tokens;
 
-
-    if(tokens_temp.len == 0) {
-        return Errors.incorrect_value_token;
+    if (!result_pl.need_indexation) {
+        return .{ .val = .{ .Object = .{ .plain = result_pl.obj } }, .tokens = tokens_temp };
     }
 
-    try index_plain_object(root, object.plain);
+    const result_ind = try parse_indexed(al, tokens_temp, root, result_pl.obj);
 
-    object = .{ .indexed = .{
-        .ident_postfix = root.*.postfix_count,
-        .indexation = &root.*.indexes,
-        .values = object.plain.values
-    }};
-
-    while(tokens_temp.len != 0) {
-        if (tokens_temp[0] == .R_SQUARE_BRACE) {
-            return .{ .val = .{ .Object = object }, .tokens = tokens_temp[1..] };
-        }
-
-        if (tokens_temp[0] != .STR) {
-            return Errors.incorrect_value_token;
-        }
-
-        const key_raw = tokens_temp[0].STR;
-        var idx_key: ?[]u8 = null;
-        defer if (idx_key) |k| al.free(k);
-
-        idx_key = try unescape_string(al, key_raw);
-
-        const key: json_object_key = .{ .key = idx_key.?, .obj_id = root.*.postfix_count };
-        if(root.*.indexes.contains(key)) {
-            return Errors.incorrect_value_token;
-        }
-
-        tokens_temp = tokens_temp[1..];
-        if (tokens_temp.len == 0) {
-            return Errors.incorrect_value_token;
-        }
-
-        if (tokens_temp[0] != .COLON) {
-            return Errors.incorrect_value_token;
-        }
-
-        const result = try parse_value(al, tokens_temp[1..], root);
-        tokens_temp = result.tokens;
-
-        try root.*.indexes.put(key, object.indexed.values.items.len - 1);
-        idx_key = null;
-        try object.indexed.values.append(al, result.val);
-    }
-
-    return Errors.incorrect_value_token;
+    return .{ .val = .{ .Object = .{ .indexed = result_ind.obj } }, .tokens = result_ind.tokens };
 }
 
 pub fn parse_value(al: std.mem.Allocator, tokens: []const Token, root: *Json) ParseResult {
@@ -405,7 +435,7 @@ pub fn parse_syntax(al: std.mem.Allocator, tokens: []const Token) !Json {
         .value          = Value.null_obj
     };
 
-    errdefer root.indexes.deinit();
+    errdefer deinit_json(al, root);
 
     const result = try parse_value(al, tokens, &root);
     root.value = result.val;
@@ -418,30 +448,32 @@ pub fn parse_syntax(al: std.mem.Allocator, tokens: []const Token) !Json {
 }
 
 pub fn deinit_plain(al: std.mem.Allocator, obj_: Object_plain) void {
-    for (obj_.values.items) |val| {
+    var obj = obj_;
+    for (obj.keys.items) |key| {
+        al.free(key);
+    }
+    for (obj.values.items) |val| {
         deinit_value(al, val);
     }
-    obj_.values.deinit(al);
+    obj.keys.deinit(al);
+    obj.values.deinit(al);
 }
 
 pub fn deinit_indexed(al: std.mem.Allocator, obj_: Object_indexed) void {
-    for (obj_.keys.items) |key| {
-        al.free(key);
-    }
-    for (obj_.values.items) |val| {
+    var obj = obj_;
+    for (obj.values.items) |val| {
         deinit_value(al, val);
     }
-    obj_.keys.deinit(al);
-    obj_.values.deinit(al);
+    obj.values.deinit(al);
 }
 
 pub fn deinit_object(al: std.mem.Allocator, obj: Object) void {
     switch(obj) {
         .indexed => |ind| {
-            deinit_plain(al, ind);
+            deinit_indexed(al, ind);
         },
         .plain => |pl| {
-            deinit_indexed(al, pl);
+            deinit_plain(al, pl);
         }
     }
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const tokenize_mod = @import("tokenize.zig");
 
-const Tokens = tokenize_mod.Tokens;
+const Tokens = tokenize_mod.Token;
 const tokenize = tokenize_mod.tokenize;
 const tokenize_string = tokenize_mod.tokenize_string;
 const tokenize_literal = tokenize_mod.tokenize_literal;
